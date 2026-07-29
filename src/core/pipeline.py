@@ -619,7 +619,10 @@ class StockAnalysisPipeline:
                                     or (code_digits and code_digits in item_title)
                                 ),
                             }
-                            if all(evidence.values()):
+                            if all(
+                                evidence.get(key)
+                                for key in ("title", "published_date", "source", "url")
+                            ):
                                 verified_event_evidence.append(evidence)
                     logger.info(f"{stock_name}({code}) 情报搜索完成: 共 {total_results} 条结果")
                     logger.debug(f"{stock_name}({code}) 情报搜索结果:\n{news_context}")

@@ -1021,6 +1021,44 @@ def fill_price_position_if_needed(
         if filled:
             dp["price_position"] = pp
             logger.info("[price_position] Synchronized price fields from computed data")
+
+        realtime_dict: Dict[str, Any] = {}
+        if realtime_quote:
+            realtime_dict = realtime_quote if isinstance(realtime_quote, dict) else (
+                realtime_quote.to_dict() if hasattr(realtime_quote, "to_dict") else {}
+            )
+            if not realtime_dict and hasattr(realtime_quote, "__dict__"):
+                realtime_dict = dict(realtime_quote.__dict__)
+        volume_ratio = _first_numeric_value(realtime_dict.get("volume_ratio"))
+        turnover_rate = _first_numeric_value(realtime_dict.get("turnover_rate"))
+        if volume_ratio is not None or turnover_rate is not None:
+            if volume_ratio is None:
+                volume_status = "数据不足"
+            elif volume_ratio >= 1.5:
+                volume_status = "显著放量"
+            elif volume_ratio >= 1.1:
+                volume_status = "温和放量"
+            elif volume_ratio <= 0.8:
+                volume_status = "缩量"
+            else:
+                volume_status = "量能平稳"
+            volume_analysis = dp.get("volume_analysis")
+            if not isinstance(volume_analysis, dict):
+                volume_analysis = {}
+                dp["volume_analysis"] = volume_analysis
+            volume_analysis.update(
+                {
+                    "volume_ratio": round(volume_ratio, 2) if volume_ratio is not None else None,
+                    "turnover_rate": round(turnover_rate, 2) if turnover_rate is not None else None,
+                    "volume_status": volume_status,
+                    "volume_meaning": (
+                        f"量比 {volume_ratio:.2f} 仅表示当日相对近期成交活跃度；"
+                        "需结合支撑或突破确认，不能单独作为买入依据。"
+                        if volume_ratio is not None
+                        else "量能字段不足，不能作为买入依据。"
+                    ),
+                }
+            )
     except Exception as e:
         logger.warning("[price_position] Fill failed, skipping: %s", e)
 
@@ -1736,7 +1774,10 @@ def enforce_evidence_consistency(
                 marker in str(item).lower()
                 for marker in ("筹码", "chip", "technical", "技术", "行情", "daily")
             )
-            and not any(marker in str(item) for marker in ("财报", "业绩", "公告", "新闻"))
+            and not any(
+                marker in str(item)
+                for marker in ("财报", "财务", "年报", "季报", "业绩", "公告", "新闻")
+            )
         ]
         for item in limitations:
             if item not in merged:

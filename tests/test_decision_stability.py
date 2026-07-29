@@ -270,6 +270,42 @@ def test_missing_evidence_rewrites_all_action_fields_and_hallucination_prone_tex
     assert "无法排除近期事件风险" in result.dashboard["intelligence"]["latest_news"]
 
 
+def test_realtime_volume_fields_replace_llm_volume_narrative() -> None:
+    result = _result(
+        decision_type="hold",
+        operation_advice="观察",
+        score=50,
+        current_price=32.0,
+    )
+    result.dashboard["data_perspective"]["volume_analysis"] = {
+        "volume_ratio": 9.9,
+        "turnover_rate": 99,
+        "volume_status": "巨量",
+        "volume_meaning": "模型声称主力抢筹",
+    }
+
+    fill_price_position_if_needed(
+        result,
+        SimpleNamespace(
+            current_price=32.0,
+            ma5=31.8,
+            ma10=31.0,
+            ma20=30.0,
+            bias_ma5=0.63,
+            support_levels=[31.8],
+            resistance_levels=[34.0],
+        ),
+        SimpleNamespace(volume_ratio=1.42, turnover_rate=0.5),
+    )
+
+    volume = result.dashboard["data_perspective"]["volume_analysis"]
+    assert volume["volume_ratio"] == 1.42
+    assert volume["turnover_rate"] == 0.5
+    assert volume["volume_status"] == "温和放量"
+    assert "主力抢筹" not in volume["volume_meaning"]
+    assert "不能单独作为买入依据" in volume["volume_meaning"]
+
+
 def test_verified_event_fields_are_rebuilt_from_dated_source_link_facts() -> None:
     result = _result(
         decision_type="hold",
