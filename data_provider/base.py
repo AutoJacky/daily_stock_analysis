@@ -3225,11 +3225,39 @@ class DataFetcherManager:
             )
             _consume_budget(bundle_ms)
             if not isinstance(bundle_payload, dict):
-                bundle_status = "failed"
-                bundle_payload = {}
-                bundle_errors = ["fundamental_bundle failed"]
-                if bundle_err_msg:
-                    bundle_errors.append(bundle_err_msg)
+                # Preserve core financial statements even when a slower
+                # forecast/dividend/holder endpoint times out the full bundle.
+                core_timeout = min(fetch_timeout, remaining_seconds)
+                if core_timeout > 0:
+                    core_payload, core_err_msg, core_ms = self._run_with_retry(
+                        lambda: self._fundamental_adapter.get_core_financial_bundle(stock_code),
+                        core_timeout,
+                        "fundamental_core_financial",
+                    )
+                    _consume_budget(core_ms)
+                else:
+                    core_payload, core_err_msg, core_ms = None, "fundamental stage timeout", 0
+                if isinstance(core_payload, dict) and self._has_meaningful_payload(
+                    {
+                        "growth": core_payload.get("growth"),
+                        "earnings": core_payload.get("earnings"),
+                    }
+                ):
+                    bundle_payload = core_payload
+                    bundle_status = str(core_payload.get("status", "partial"))
+                    bundle_errors = ["fundamental_bundle failed; core financial fallback used"]
+                    if bundle_err_msg:
+                        bundle_errors.append(bundle_err_msg)
+                    if core_err_msg:
+                        bundle_errors.append(core_err_msg)
+                else:
+                    bundle_status = "failed"
+                    bundle_payload = {}
+                    bundle_errors = ["fundamental_bundle failed"]
+                    if bundle_err_msg:
+                        bundle_errors.append(bundle_err_msg)
+                    if core_err_msg:
+                        bundle_errors.append(core_err_msg)
             else:
                 bundle_status = str(bundle_payload.get("status", "not_supported"))
                 bundle_errors = [bundle_err_msg] if bundle_err_msg else []

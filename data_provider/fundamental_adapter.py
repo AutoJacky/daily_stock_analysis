@@ -53,11 +53,21 @@ def _safe_float(value: Any) -> Optional[float]:
             return float(value)
         except (TypeError, ValueError):
             return None
-    s = str(value).strip().replace(",", "").replace("%", "")
-    if not s:
+    raw = str(value).strip().replace(",", "")
+    if not raw or raw.lower() in {"-", "--", "nan", "none", "null", "n/a"}:
+        return None
+    multiplier = 1.0
+    if "万亿" in raw:
+        multiplier = 1e12
+    elif "亿" in raw:
+        multiplier = 1e8
+    elif "万" in raw:
+        multiplier = 1e4
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", raw)
+    if match is None:
         return None
     try:
-        return float(s)
+        return float(match.group(0)) * multiplier
     except (TypeError, ValueError):
         return None
 
@@ -417,6 +427,84 @@ class AkshareFundamentalAdapter:
 
         has_content = bool(result["growth"] or result["earnings"] or result["institution"])
         result["status"] = "partial" if has_content else "not_supported"
+        return result
+
+    def get_core_financial_bundle(self, stock_code: str) -> Dict[str, Any]:
+        """Fetch only the latest audited/interim financial indicator row.
+
+        The full bundle also calls forecast, dividend and holder endpoints.  A
+        slow supplemental endpoint can cause the outer stage timeout to discard
+        an already-fetched financial statement.  This compact fallback uses the
+        independent Tonghuashun/Sina feeds and returns immediately after the
+        core report fields are normalized.
+        """
+        result: Dict[str, Any] = {
+            "status": "not_supported",
+            "growth": {},
+            "earnings": {},
+            "institution": {},
+            "source_chain": [],
+            "errors": [],
+        }
+        fin_df, fin_source, fin_errors = self._call_df_candidates([
+            ("stock_financial_abstract_new_ths", {"symbol": stock_code, "indicator": "按报告期"}),
+            ("stock_financial_abstract_ths", {"symbol": stock_code, "indicator": "按报告期"}),
+            ("stock_financial_abstract", {"symbol": stock_code}),
+        ])
+        result["errors"].extend(fin_errors)
+        if fin_df is None:
+            return result
+
+        row = _extract_latest_row(fin_df, stock_code)
+        if row is None:
+            return result
+        revenue_yoy = _safe_float(_pick_by_keywords(
+            row,
+            [
+                "营业总收入同比增长率",
+                "营业收入同比增长率",
+                "营业总收入同比",
+                "营业收入同比",
+                "营收同比",
+            ],
+        ))
+        profit_yoy = _safe_float(_pick_by_keywords(
+            row,
+            ["归母净利润同比增长率", "净利润同比增长率", "归母净利润同比", "净利润同比"],
+        ))
+        roe = _safe_float(_pick_by_keywords(row, ["净资产收益率", "ROE", "净资产收益"]))
+        gross_margin = _safe_float(_pick_by_keywords(row, ["销售毛利率", "毛利率"]))
+        report_date = _normalize_report_date(
+            _pick_by_keywords(row, ["报告期", "报告日期", "截止日期"])
+        )
+        revenue = _safe_float(_pick_by_keywords(row, ["营业总收入", "营业收入", "营收"]))
+        net_profit_parent = _safe_float(_pick_by_keywords(
+            row,
+            ["归母净利润", "归属于母公司股东的净利润", "母公司股东净利润"],
+        ))
+        operating_cash_flow = _safe_float(_pick_by_keywords(
+            row,
+            ["经营活动产生的现金流量净额", "经营现金流", "经营活动现金流"],
+        ))
+
+        result["growth"] = {
+            "revenue_yoy": revenue_yoy,
+            "net_profit_yoy": profit_yoy,
+            "roe": roe,
+            "gross_margin": gross_margin,
+        }
+        financial_report = {
+            "report_date": report_date,
+            "revenue": revenue,
+            "net_profit_parent": net_profit_parent,
+            "operating_cash_flow": operating_cash_flow,
+            "roe": roe,
+        }
+        if any(value is not None for value in financial_report.values()):
+            result["earnings"]["financial_report"] = financial_report
+        if any(value is not None for value in result["growth"].values()) or result["earnings"]:
+            result["status"] = "partial"
+            result["source_chain"].append(f"core_financial:{fin_source}")
         return result
 
     def get_capital_flow(self, stock_code: str, top_n: int = 5) -> Dict[str, Any]:

@@ -22,6 +22,41 @@ from data_provider.fundamental_adapter import (
 
 
 class TestFundamentalAdapter(unittest.TestCase):
+    def test_core_financial_bundle_normalizes_ths_fields(self) -> None:
+        adapter = AkshareFundamentalAdapter()
+        fin_df = pd.DataFrame(
+            {
+                "报告期": ["2026-06-30"],
+                "营业总收入": ["1000.5亿"],
+                "归母净利润": ["300.2亿"],
+                "经营活动产生的现金流量净额": ["280.0亿"],
+                "净资产收益率": ["18.2%"],
+                "销售毛利率": ["91.4%"],
+                "营业总收入同比增长率": ["12.0%"],
+                "归母净利润同比增长率": ["9.5%"],
+            }
+        )
+
+        with patch.object(
+            adapter,
+            "_call_df_candidates",
+            return_value=(fin_df, "stock_financial_abstract_new_ths", []),
+        ) as mocked:
+            result = adapter.get_core_financial_bundle("600519")
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["growth"]["revenue_yoy"], 12.0)
+        self.assertEqual(result["growth"]["net_profit_yoy"], 9.5)
+        self.assertEqual(result["growth"]["roe"], 18.2)
+        self.assertEqual(result["growth"]["gross_margin"], 91.4)
+        report = result["earnings"]["financial_report"]
+        self.assertEqual(report["report_date"], "2026-06-30")
+        self.assertEqual(report["revenue"], 1000.5e8)
+        self.assertEqual(report["net_profit_parent"], 300.2e8)
+        self.assertEqual(report["operating_cash_flow"], 280.0e8)
+        candidates = mocked.call_args.args[0]
+        self.assertEqual(candidates[0][0], "stock_financial_abstract_new_ths")
+
     def test_parse_dividend_plan_to_per_share_supports_cn_patterns(self) -> None:
         self.assertAlmostEqual(_parse_dividend_plan_to_per_share("10派3元(含税)"), 0.3, places=6)
         self.assertAlmostEqual(_parse_dividend_plan_to_per_share("每10股派发2.5元"), 0.25, places=6)

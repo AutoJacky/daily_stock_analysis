@@ -997,6 +997,11 @@ def fill_price_position_if_needed(
             if _is_value_placeholder(computed.get("current_price")):
                 computed["current_price"] = rq.get("price")
 
+        for key, value in list(computed.items()):
+            numeric = _coerce_numeric_value(value)
+            if numeric is not None:
+                computed[key] = round(numeric, 4 if abs(numeric) < 1 else 2)
+
         filled = False
         for k in _PRICE_POS_KEYS:
             if not _is_value_placeholder(computed.get(k)) and pp.get(k) != computed.get(k):
@@ -1724,11 +1729,30 @@ def enforce_evidence_consistency(
     phase_decision = dashboard.get("phase_decision")
     if isinstance(phase_decision, dict) and limitations:
         existing = phase_decision.get("data_limitations")
-        merged = list(existing) if isinstance(existing, list) else []
+        merged = [
+            str(item)
+            for item in (existing if isinstance(existing, list) else [])
+            if any(
+                marker in str(item).lower()
+                for marker in ("筹码", "chip", "technical", "技术", "行情", "daily")
+            )
+            and not any(marker in str(item) for marker in ("财报", "业绩", "公告", "新闻"))
+        ]
         for item in limitations:
             if item not in merged:
                 merged.append(item)
         phase_decision["data_limitations"] = merged[:7]
+        phase_decision["confidence_reason"] = (
+            "行情与日线可用；技术数据部分可用，筹码、财报或资金流证据不完整，置信度已降级。"
+            if language == "zh"
+            else "Quote and daily bars are available, but technical/fundamental evidence is incomplete."
+        )
+
+    if limitations:
+        # Percentage attribution is model-generated pseudo-precision unless it
+        # comes from a separately calibrated model.  Omit it when evidence is
+        # degraded rather than display invented 70/25/5 weights.
+        dashboard.pop("signal_attribution", None)
 
     _sync_stability_dashboard_fields(result)
 
@@ -1759,9 +1783,10 @@ def _apply_verified_event_evidence(
         fact = f"[{published}][{source}] {title}（{url}）"
         rendered.append(fact)
         is_risk = any(term in title for term in risk_terms)
-        if is_risk:
+        direct_in_title = bool(item.get("direct_in_title"))
+        if direct_in_title and is_risk:
             risks.append(fact)
-        elif any(term in title for term in catalyst_terms):
+        elif direct_in_title and any(term in title for term in catalyst_terms):
             catalysts.append(fact)
         if len(rendered) >= 5:
             break

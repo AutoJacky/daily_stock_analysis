@@ -299,12 +299,21 @@ def test_verified_event_fields_are_rebuilt_from_dated_source_link_facts() -> Non
                 "published_date": "2026-07-30",
                 "source": "上交所",
                 "url": "https://www.sse.com.cn/example",
+                "direct_in_title": True,
             },
             {
                 "title": "股东披露减持计划",
                 "published_date": "2026-07-29",
                 "source": "巨潮资讯",
                 "url": "https://www.cninfo.com.cn/example",
+                "direct_in_title": True,
+            },
+            {
+                "title": "沪市年度分红总额创新高",
+                "published_date": "2026-07-28",
+                "source": "财经媒体",
+                "url": "https://example.com/market-dividend",
+                "direct_in_title": False,
             },
         ],
     )
@@ -315,6 +324,7 @@ def test_verified_event_fields_are_rebuilt_from_dated_source_link_facts() -> Non
     assert intel["positive_catalysts"] == [
         "[2026-07-30][上交所] 公司发布回购公告（https://www.sse.com.cn/example）"
     ]
+    assert "沪市年度分红总额创新高" in intel["latest_news"]
     assert intel["risk_alerts"][0] == (
         "[2026-07-29][巨潮资讯] 股东披露减持计划（https://www.cninfo.com.cn/example）"
     )

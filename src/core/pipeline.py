@@ -607,11 +607,17 @@ class StockAnalysisPipeline:
                         if not response or not response.success:
                             continue
                         for item in response.results:
+                            item_title = str(getattr(item, "title", None) or "")
+                            code_digits = "".join(char for char in str(code) if char.isdigit())[:6]
                             evidence = {
-                                "title": getattr(item, "title", None),
+                                "title": item_title,
                                 "published_date": getattr(item, "published_date", None),
                                 "source": getattr(item, "source", None),
                                 "url": getattr(item, "url", None),
+                                "direct_in_title": bool(
+                                    (stock_name and stock_name in item_title)
+                                    or (code_digits and code_digits in item_title)
+                                ),
                             }
                             if all(evidence.values()):
                                 verified_event_evidence.append(evidence)

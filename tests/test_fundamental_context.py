@@ -39,6 +39,68 @@ class _DummyBoardFetcher:
 
 
 class TestFundamentalContext(unittest.TestCase):
+    def test_core_financial_fallback_survives_full_bundle_timeout(self) -> None:
+        manager = DataFetcherManager(fetchers=[])
+        cfg = SimpleNamespace(
+            enable_fundamental_pipeline=True,
+            fundamental_cache_ttl_seconds=0,
+            fundamental_cache_max_entries=32,
+            fundamental_stage_timeout_seconds=1.5,
+            fundamental_fetch_timeout_seconds=0.4,
+            fundamental_retry_max=1,
+        )
+        quote = SimpleNamespace(
+            pe_ratio=19.9,
+            pb_ratio=7.1,
+            total_mv=1.65e12,
+            circ_mv=1.65e12,
+            price=1321.0,
+            source=SimpleNamespace(value="tencent"),
+        )
+        core_bundle = {
+            "status": "partial",
+            "growth": {"revenue_yoy": 12.0, "net_profit_yoy": 9.5},
+            "earnings": {
+                "financial_report": {
+                    "report_date": "2026-06-30",
+                    "revenue": 1000.5,
+                    "net_profit_parent": 300.2,
+                }
+            },
+            "institution": {},
+            "source_chain": ["core_financial:stock_financial_abstract_new_ths"],
+            "errors": [],
+        }
+        empty_block = {"status": "not_supported", "data": {}, "source_chain": [], "errors": []}
+
+        with patch("src.config.get_config", return_value=cfg), \
+                patch.object(manager, "get_realtime_quote", return_value=quote), \
+                patch(
+                    "data_provider.fundamental_adapter.AkshareFundamentalAdapter.get_fundamental_bundle",
+                    side_effect=TimeoutError("slow supplemental endpoint"),
+                ), \
+                patch(
+                    "data_provider.fundamental_adapter.AkshareFundamentalAdapter.get_core_financial_bundle",
+                    return_value=core_bundle,
+                ), \
+                patch.object(manager, "get_capital_flow_context", return_value=empty_block), \
+                patch.object(manager, "get_dragon_tiger_context", return_value=empty_block), \
+                patch.object(manager, "get_board_context", return_value=empty_block):
+            ctx = manager.get_fundamental_context("600519")
+
+        self.assertEqual(ctx["growth"]["status"], "ok")
+        self.assertEqual(ctx["growth"]["data"]["revenue_yoy"], 12.0)
+        self.assertEqual(
+            ctx["earnings"]["data"]["financial_report"]["report_date"],
+            "2026-06-30",
+        )
+        self.assertTrue(
+            any(
+                item["provider"] == "core_financial:stock_financial_abstract_new_ths"
+                for item in ctx["source_chain"]
+            )
+        )
+
     def test_offshore_market_returns_not_supported_when_adapter_empty(self) -> None:
         """When yfinance adapter has no data, offshore (US/HK) status is not_supported.
 
