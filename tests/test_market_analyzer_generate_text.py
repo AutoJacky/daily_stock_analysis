@@ -3354,6 +3354,91 @@ Sector text.
         assert "breadth" not in payload
         assert payload["indices"][0]["name"] == "上证指数"
 
+    def test_cn_market_review_blocks_llm_when_fetched_breadth_is_missing(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="不应调用")
+        overview = MarketOverview(
+            date="2026-07-29",
+            indices_attempted=True,
+            market_stats_attempted=True,
+            market_stats_available=False,
+            indices=[
+                MarketIndex(
+                    code="000001",
+                    name="上证指数",
+                    current=3828.47,
+                    change_pct=0.40,
+                    amount=1_087_400_000_000.0,
+                ),
+                MarketIndex(
+                    code="399001",
+                    name="深证成指",
+                    current=13658.44,
+                    change_pct=1.10,
+                    amount=1_209_200_000_000.0,
+                ),
+            ],
+        )
+        ma._recover_cn_total_amount_from_indices(overview)
+
+        result = ma.generate_market_review(overview, [])
+
+        ma.analyzer.generate_text.assert_not_called()
+        assert overview.total_amount == 22966.0
+        assert "数据校验未通过" in result
+        assert "市场宽度**：不可用" in result
+        assert "不生成市场方向、情绪温度、仓位区间或交易计划" in result
+        assert "极端静止" not in result
+        assert "流动性冻结" not in result
+
+    def test_cn_missing_market_stats_are_not_rendered_as_zero_in_prompt(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="复盘结果")
+        overview = MarketOverview(
+            date="2026-07-29",
+            indices_attempted=True,
+            market_stats_attempted=True,
+            market_stats_available=False,
+            indices=[
+                MarketIndex(code="000001", name="上证指数", current=3828.47, change_pct=0.40),
+                MarketIndex(code="399001", name="深证成指", current=13658.44, change_pct=1.10),
+            ],
+        )
+
+        prompt = ma._build_review_prompt(overview, [])
+
+        assert "上涨: 0 家" not in prompt
+        assert "下跌: 0 家" not in prompt
+        assert "两市成交额: 0 亿元" not in prompt
+        assert "缺失不等于 0" in prompt
+        assert "禁止解读为市场无成交、无涨跌或流动性冻结" in prompt
+
+    def test_cn_market_light_is_unavailable_when_fetched_breadth_is_missing(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="复盘结果")
+        overview = MarketOverview(
+            date="2026-07-29",
+            indices_attempted=True,
+            market_stats_attempted=True,
+            market_stats_available=False,
+            indices=[
+                MarketIndex(code="000001", name="上证指数", current=3828.47, change_pct=0.40),
+                MarketIndex(code="399001", name="深证成指", current=13658.44, change_pct=1.10),
+            ],
+        )
+
+        snapshot = ma.build_market_light_snapshot(overview)
+
+        assert snapshot["status"] == "yellow"
+        assert snapshot["label"] == "数据不足"
+        assert snapshot["temperature_label"] == "不可用"
+        assert snapshot["data_quality"] == "unavailable"
+        assert snapshot["dimensions"]["breadth"]["available"] is False
+        assert "暂停方向和仓位判断" in snapshot["guidance"]
+
     def test_market_review_payload_includes_breadth_only_when_stats_available(self):
         from src.market_analyzer import MarketIndex, MarketOverview
 
