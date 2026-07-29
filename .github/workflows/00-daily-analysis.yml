@@ -22,6 +22,11 @@ on:
         required: false
         default: false
         type: boolean
+      send_notification:
+        description: '发送推送通知'
+        required: false
+        default: true
+        type: boolean
 
 # 并发控制：同一时间只运行一个分析任务
 concurrency:
@@ -507,14 +512,19 @@ jobs:
             FORCE_RUN_ARG="--force-run"
             echo "⚡ 已启用强制运行模式（跳过交易日检查）"
           fi
+          NOTIFY_ARG=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.send_notification }}" = "false" ]; then
+            NOTIFY_ARG="--no-notify"
+            echo "🔕 本次手动运行已关闭推送通知"
+          fi
 
           # 执行分析
           if [ "$MODE" = "market-only" ]; then
-            python main.py --market-review $FORCE_RUN_ARG
+            python main.py --market-review $FORCE_RUN_ARG $NOTIFY_ARG
           elif [ "$MODE" = "stocks-only" ]; then
-            python main.py --no-market-review $FORCE_RUN_ARG
+            python main.py --no-market-review $FORCE_RUN_ARG $NOTIFY_ARG
           else
-            python main.py $FORCE_RUN_ARG
+            python main.py $FORCE_RUN_ARG $NOTIFY_ARG
           fi
       
       - name: 上传分析报告
