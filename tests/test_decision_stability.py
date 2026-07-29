@@ -3,7 +3,13 @@
 
 from types import SimpleNamespace
 
-from src.analyzer import AnalysisResult, _capital_flow_bias, stabilize_decision_with_structure
+from src.analyzer import (
+    AnalysisResult,
+    _capital_flow_bias,
+    enforce_evidence_consistency,
+    fill_price_position_if_needed,
+    stabilize_decision_with_structure,
+)
 
 
 def _result(
@@ -165,6 +171,154 @@ def test_downgrades_buy_when_capital_flow_is_unavailable() -> None:
     assert sell_result.operation_advice == "卖出"
     assert sell_result.dashboard["decision_stability"]["applied"] is False
     assert "未使用资金流校准" in sell_result.dashboard["decision_stability"]["reason"]
+
+
+def test_missing_evidence_rewrites_all_action_fields_and_hallucination_prone_text() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="买入",
+        score=80,
+        current_price=1321.0,
+    )
+    result.trend_prediction = "强烈看多"
+    result.confidence_level = "中"
+    result.risk_warning = "汇率波动影响出口业务"
+    result.buy_reason = "PE处于近5年20%分位"
+    result.dashboard.update(
+        {
+            "core_conclusion": {
+                "one_sentence": "立即建仓",
+                "time_sensitivity": "立即行动",
+                "position_advice": {},
+            },
+            "data_perspective": {
+                "price_position": {
+                    "current_price": 1321.0,
+                    "ma5": 1309.78,
+                    "ma10": 1303.44,
+                    "ma20": 1257.35,
+                    "support_level": 1309.78,
+                    "resistance_level": "1325（模型猜测）",
+                }
+            },
+            "intelligence": {
+                "sentiment_summary": "无近期重大事件",
+                "risk_alerts": [],
+                "positive_catalysts": ["利好"],
+            },
+            "battle_plan": {
+                "sniper_points": {
+                    "ideal_buy": "1310-1315",
+                    "secondary_buy": "1303-1308",
+                    "stop_loss": "1295",
+                    "take_profit": "1350（MA10上轨）",
+                },
+                "action_checklist": [
+                    "✅ PE 19.96处于合理区间（近5年百分位20%）",
+                    "✅ 无重大利空公告",
+                ],
+            },
+            "phase_decision": {
+                "immediate_action": "立即建仓",
+                "watch_conditions": ["竞价量能>600万手"],
+                "data_limitations": [],
+            },
+        }
+    )
+    trend = SimpleNamespace(
+        current_price=1321.0,
+        ma5=1309.78,
+        ma10=1303.44,
+        ma20=1257.35,
+        bias_ma5=0.86,
+        volume_ratio_5d=1.17,
+        support_levels=[1309.78, 1303.44, 1257.35],
+        resistance_levels=[1343.48],
+    )
+    missing_fundamentals = {
+        "growth": {"status": "failed", "data": {}},
+        "earnings": {"status": "failed", "data": {}},
+        "capital_flow": {"status": "failed", "data": {}},
+    }
+
+    fill_price_position_if_needed(result, trend)
+    stabilize_decision_with_structure(result, trend, missing_fundamentals)
+    enforce_evidence_consistency(
+        result,
+        trend,
+        missing_fundamentals,
+        news_result_count=0,
+    )
+
+    assert result.decision_type == "hold"
+    assert result.trend_prediction == "震荡偏多（等待确认）"
+    assert result.dashboard["trend_prediction"] == result.trend_prediction
+    assert result.dashboard["core_conclusion"]["time_sensitivity"].startswith("不急")
+    assert result.dashboard["phase_decision"]["immediate_action"].startswith("等待")
+    assert "600万手" not in " ".join(result.dashboard["phase_decision"]["watch_conditions"])
+    assert result.dashboard["data_perspective"]["price_position"]["resistance_level"] == 1343.48
+    sniper = result.dashboard["battle_plan"]["sniper_points"]
+    assert "1309.78" in sniper["ideal_buy"]
+    assert "1303.44" in sniper["stop_loss"]
+    assert "1343.48" in sniper["take_profit"]
+    checklist = " ".join(result.dashboard["battle_plan"]["action_checklist"])
+    assert "近5年百分位" not in checklist
+    assert "无重大利空" in checklist
+    assert "不能表述" in checklist
+    assert "汇率波动" not in result.risk_warning
+    assert result.dashboard["intelligence"]["positive_catalysts"] == []
+    assert "无法排除近期事件风险" in result.dashboard["intelligence"]["latest_news"]
+
+
+def test_verified_event_fields_are_rebuilt_from_dated_source_link_facts() -> None:
+    result = _result(
+        decision_type="hold",
+        operation_advice="持有观察",
+        score=55,
+        current_price=32.0,
+    )
+    result.dashboard["intelligence"] = {
+        "latest_news": "模型编造消息",
+        "risk_alerts": ["无来源风险"],
+        "positive_catalysts": ["无来源利好"],
+    }
+    fundamentals = {
+        "growth": {"status": "ok", "data": {"revenue_yoy": 8.2}},
+        "earnings": {"status": "ok", "data": {"report_period": "2026Q2"}},
+        "capital_flow": {"status": "ok", "data": {"stock_flow": {"main_net_inflow": 1}}},
+    }
+
+    enforce_evidence_consistency(
+        result,
+        SimpleNamespace(ma5=31.8, ma10=31.0, ma20=30.0, bias_ma5=0.6),
+        fundamentals,
+        news_result_count=2,
+        verified_event_evidence=[
+            {
+                "title": "公司发布回购公告",
+                "published_date": "2026-07-30",
+                "source": "上交所",
+                "url": "https://www.sse.com.cn/example",
+            },
+            {
+                "title": "股东披露减持计划",
+                "published_date": "2026-07-29",
+                "source": "巨潮资讯",
+                "url": "https://www.cninfo.com.cn/example",
+            },
+        ],
+    )
+
+    intel = result.dashboard["intelligence"]
+    assert "模型编造消息" not in intel["latest_news"]
+    assert "[2026-07-30][上交所] 公司发布回购公告" in intel["latest_news"]
+    assert intel["positive_catalysts"] == [
+        "[2026-07-30][上交所] 公司发布回购公告（https://www.sse.com.cn/example）"
+    ]
+    assert intel["risk_alerts"][0] == (
+        "[2026-07-29][巨潮资讯] 股东披露减持计划（https://www.cninfo.com.cn/example）"
+    )
+    assert "不等同交易所/公司公告全量核验" in intel["risk_alerts"][1]
 
 
 def test_downgrades_buy_when_capital_flow_values_are_na() -> None:

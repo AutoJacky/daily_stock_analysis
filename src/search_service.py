@@ -4286,8 +4286,133 @@ class SearchService:
             
             # 短暂延迟避免请求过快
             time.sleep(0.5)
+
+        # Public SearXNG instances are frequently rate-limited on hosted
+        # runners.  For A shares, use East Money's stock-news feed through
+        # AkShare as a no-key, source-preserving fallback.  It is deliberately
+        # limited to the latest-news dimension and is never presented as an
+        # official exchange filing.
+        latest_response = results.get("latest_news")
+        needs_latest_fallback = (
+            not is_foreign
+            and bool(re.fullmatch(r"\d{6}(?:\.(?:SH|SZ|BJ))?", str(stock_code).strip(), re.IGNORECASE))
+            and (
+                latest_response is None
+                or not latest_response.success
+                or not latest_response.results
+            )
+            and any(isinstance(provider, SearXNGSearchProvider) for provider in self._providers)
+        )
+        if needs_latest_fallback:
+            fallback = self._search_akshare_stock_news(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                max_results=provider_max_results,
+            )
+            fallback = self._filter_news_response(
+                fallback,
+                search_days=search_days,
+                max_results=provider_max_results,
+                log_scope=f"{stock_code}:AkShare:latest_news",
+            )
+            fallback = self._rank_news_response(
+                fallback,
+                stock_code=stock_code,
+                stock_name=stock_name,
+                prefer_chinese=True,
+                max_results=provider_max_results,
+                log_scope=f"{stock_code}:AkShare:latest_news:rank",
+            )
+            fallback = self._filter_ranked_news_for_context(
+                fallback,
+                log_scope=f"{stock_code}:AkShare:latest_news:admission",
+            )
+            fallback = self._limit_search_response(
+                fallback,
+                max_results=target_per_dimension,
+            )
+            if fallback.success and fallback.results:
+                results["latest_news"] = fallback
+                logger.info(
+                    "[情报搜索] 最新消息: SearXNG 无可用结果，AkShare/东方财富兜底保留 %s 条",
+                    len(fallback.results),
+                )
         
         return results
+
+    @staticmethod
+    def _search_akshare_stock_news(
+        *,
+        stock_code: str,
+        stock_name: str,
+        max_results: int,
+    ) -> SearchResponse:
+        """Fetch A-share company news from East Money via AkShare."""
+        started_at = time.monotonic()
+        query = f"{stock_name} {stock_code} 东方财富个股新闻"
+        try:
+            import akshare as ak
+
+            symbol_match = re.search(r"\d{6}", str(stock_code))
+            if symbol_match is None:
+                raise ValueError("invalid A-share code")
+            frame = ak.stock_news_em(symbol=symbol_match.group(0))
+            if frame is None or getattr(frame, "empty", True):
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider="AkShare/东方财富",
+                    success=False,
+                    error_message="东方财富个股新闻返回空结果",
+                    search_time=time.monotonic() - started_at,
+                )
+
+            def _pick(row: Any, *columns: str) -> str:
+                for column in columns:
+                    value = row.get(column) if hasattr(row, "get") else None
+                    if value is None:
+                        continue
+                    text = str(value).strip()
+                    if text and text.lower() not in {"nan", "none", "nat"}:
+                        return text
+                return ""
+
+            items: List[SearchResult] = []
+            for _, row in frame.iterrows():
+                title = _pick(row, "新闻标题", "标题", "title")
+                url = _pick(row, "新闻链接", "链接", "url")
+                published = _pick(row, "发布时间", "日期", "published_date")
+                if not title or not url or not published:
+                    continue
+                items.append(
+                    SearchResult(
+                        title=title,
+                        snippet=_pick(row, "新闻内容", "内容", "摘要", "snippet")[:800],
+                        url=url,
+                        source=_pick(row, "文章来源", "来源", "source") or "东方财富",
+                        published_date=published,
+                    )
+                )
+                if len(items) >= max(1, max_results):
+                    break
+            return SearchResponse(
+                query=query,
+                results=items,
+                provider="AkShare/东方财富",
+                success=bool(items),
+                error_message=None if items else "东方财富个股新闻缺少可追溯标题、日期或链接",
+                search_time=time.monotonic() - started_at,
+            )
+        except Exception as exc:
+            logger.warning("[AkShare新闻] %s(%s) 兜底失败: %s", stock_name, stock_code, exc)
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider="AkShare/东方财富",
+                success=False,
+                error_message=str(exc),
+                search_time=time.monotonic() - started_at,
+            )
     
     def format_intel_report(self, intel_results: Dict[str, SearchResponse], stock_name: str) -> str:
         """

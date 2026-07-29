@@ -57,6 +57,8 @@ _EN_POSTMARKET_RECAP_PATTERNS = (
 _IMMEDIATE_ACTION_MARKERS_ZH = (
     "立即买入",
     "马上买入",
+    "立即建仓",
+    "马上建仓",
     "立即加仓",
     "马上加仓",
     "立即卖出",

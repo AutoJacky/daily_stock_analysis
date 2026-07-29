@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
+
 # Mock newspaper before search_service import (optional dependency)
 if "newspaper" not in sys.modules:
     mock_np = MagicMock()
@@ -1451,6 +1453,71 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
             ["腾讯控股 00700 发布回购公告"],
         )
         mock_search.assert_called_once()
+
+    def test_searxng_empty_latest_news_uses_akshare_fallback(self) -> None:
+        fresh = datetime.now().date().isoformat()
+        service = SearchService(
+            searxng_base_urls=["https://search.example.invalid"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=3,
+        )
+        service._providers[0].search = MagicMock(
+            return_value=SearchResponse(
+                query="test",
+                results=[],
+                provider="SearXNG",
+                success=False,
+                error_message="rate limited",
+            )
+        )
+        fallback = SearchResponse(
+            query="贵州茅台 东方财富个股新闻",
+            results=[
+                _result(
+                    "贵州茅台 600519 发布经营公告",
+                    fresh,
+                    snippet="公司发布经营公告。",
+                    source="东方财富",
+                )
+            ],
+            provider="AkShare/东方财富",
+            success=True,
+        )
+
+        with patch.object(service, "_search_akshare_stock_news", return_value=fallback), patch(
+            "src.search_service.time.sleep"
+        ):
+            intel = service.search_comprehensive_intel("600519", "贵州茅台", max_searches=1)
+
+        self.assertEqual(intel["latest_news"].provider, "AkShare/东方财富")
+        self.assertEqual(len(intel["latest_news"].results), 1)
+
+    def test_akshare_fallback_preserves_title_date_source_and_link(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "新闻标题": "贵州茅台发布公告",
+                    "新闻内容": "公告摘要",
+                    "发布时间": "2026-07-30 09:00:00",
+                    "文章来源": "证券时报",
+                    "新闻链接": "https://example.com/moutai",
+                }
+            ]
+        )
+        fake_akshare = SimpleNamespace(stock_news_em=MagicMock(return_value=frame))
+
+        with patch.dict(sys.modules, {"akshare": fake_akshare}):
+            response = SearchService._search_akshare_stock_news(
+                stock_code="600519.SH",
+                stock_name="贵州茅台",
+                max_results=3,
+            )
+
+        self.assertTrue(response.success)
+        self.assertEqual(response.provider, "AkShare/东方财富")
+        self.assertEqual(response.results[0].source, "证券时报")
+        self.assertEqual(response.results[0].published_date, "2026-07-30 09:00:00")
+        self.assertEqual(response.results[0].url, "https://example.com/moutai")
 
     def test_a_share_chinese_direct_news_beats_english_direct_provider_fallback(self) -> None:
         """Chinese-preferred queries should keep looking past English-only direct hits."""

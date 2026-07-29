@@ -31,6 +31,7 @@ from data_provider.realtime_types import ChipDistribution
 from src.analyzer import (
     GeminiAnalyzer,
     AnalysisResult,
+    enforce_evidence_consistency,
     fill_price_position_if_needed,
     normalize_chip_structure_availability,
     populate_decision_action_fields,
@@ -582,6 +583,7 @@ class StockAnalysisPipeline:
                 market=market or "cn",
             )
             news_result_count: Optional[int] = None
+            verified_event_evidence: List[Dict[str, Any]] = []
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
             if self.search_service is not None and self.search_service.is_available:
                 logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
@@ -600,6 +602,19 @@ class StockAnalysisPipeline:
                         len(r.results) for r in intel_results.values() if r.success
                     )
                     news_result_count = total_results
+                    for dimension in ("latest_news", "announcements", "risk_check"):
+                        response = intel_results.get(dimension)
+                        if not response or not response.success:
+                            continue
+                        for item in response.results:
+                            evidence = {
+                                "title": getattr(item, "title", None),
+                                "published_date": getattr(item, "published_date", None),
+                                "source": getattr(item, "source", None),
+                                "url": getattr(item, "url", None),
+                            }
+                            if all(evidence.values()):
+                                verified_event_evidence.append(evidence)
                     logger.info(f"{stock_name}({code}) 情报搜索完成: 共 {total_results} 条结果")
                     logger.debug(f"{stock_name}({code}) 情报搜索结果:\n{news_context}")
 
@@ -777,6 +792,13 @@ class StockAnalysisPipeline:
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
                 action_source_advice = getattr(result, "operation_advice", None)
                 stabilize_decision_with_structure(result, trend_result, fundamental_context)
+                enforce_evidence_consistency(
+                    result,
+                    trend_result,
+                    fundamental_context,
+                    news_result_count=news_result_count,
+                    verified_event_evidence=verified_event_evidence,
+                )
                 adjustments = apply_phase_decision_guardrails(
                     result,
                     market_phase_summary=market_phase_summary,

@@ -958,7 +958,12 @@ def fill_price_position_if_needed(
     trend_result: Any = None,
     realtime_quote: Any = None,
 ) -> None:
-    """Fill missing price_position fields from trend_result / realtime data (in-place)."""
+    """Fill price_position from trusted computed/realtime data (in-place).
+
+    Numeric price levels are facts, not prose.  When a computed value exists it
+    must replace an LLM supplied value; otherwise a plausible-looking invented
+    support/resistance level can survive the old "fill missing only" behavior.
+    """
     if not result:
         return
     try:
@@ -994,12 +999,23 @@ def fill_price_position_if_needed(
 
         filled = False
         for k in _PRICE_POS_KEYS:
-            if _is_value_placeholder(pp.get(k)) and not _is_value_placeholder(computed.get(k)):
+            if not _is_value_placeholder(computed.get(k)) and pp.get(k) != computed.get(k):
                 pp[k] = computed[k]
+                filled = True
+        bias_ma5 = _coerce_numeric_value(computed.get("bias_ma5"))
+        if bias_ma5 is not None:
+            if abs(bias_ma5) < 2:
+                computed_bias_status = "安全"
+            elif abs(bias_ma5) <= 5:
+                computed_bias_status = "警戒"
+            else:
+                computed_bias_status = "危险"
+            if pp.get("bias_status") != computed_bias_status:
+                pp["bias_status"] = computed_bias_status
                 filled = True
         if filled:
             dp["price_position"] = pp
-            logger.info("[price_position] Filled placeholder fields from computed data")
+            logger.info("[price_position] Synchronized price fields from computed data")
     except Exception as e:
         logger.warning("[price_position] Fill failed, skipping: %s", e)
 
@@ -1223,8 +1239,10 @@ def _sync_stability_dashboard_fields(result: "AnalysisResult") -> None:
     dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
     result.dashboard = dashboard
     dashboard["sentiment_score"] = getattr(result, "sentiment_score", None)
+    dashboard["trend_prediction"] = getattr(result, "trend_prediction", None)
     dashboard["operation_advice"] = getattr(result, "operation_advice", None)
     dashboard["decision_type"] = getattr(result, "decision_type", None)
+    dashboard["confidence_level"] = getattr(result, "confidence_level", None)
 
 
 def _as_dict_for_decision_guard(value: Any) -> Dict[str, Any]:
@@ -1416,6 +1434,17 @@ def _apply_hold_watch_dashboard(
     capital_flow_status: Optional[str] = None,
 ) -> None:
     result.operation_advice = advice
+    original_trend = str(getattr(result, "trend_prediction", "") or "")
+    if language == "zh":
+        result.trend_prediction = (
+            "震荡偏多（等待确认）"
+            if any(term in original_trend for term in ("看多", "多头", "上涨"))
+            else "震荡（等待确认）"
+        )
+    elif language == "ko":
+        result.trend_prediction = "상승 편향 횡보(확인 대기)"
+    else:
+        result.trend_prediction = "Sideways with confirmation pending"
 
     dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
     result.dashboard = dashboard
@@ -1425,6 +1454,11 @@ def _apply_hold_watch_dashboard(
         dashboard["core_conclusion"] = core
     core["signal_type"] = "🟡持有观望" if language == "zh" else "🟡 Hold / Watch"
     core["one_sentence"] = f"{advice}：{reason}" if language == "zh" else f"{advice}: {reason}"
+    core["time_sensitivity"] = (
+        "不急（等待数据与价格确认）"
+        if language == "zh"
+        else "Not urgent; wait for data and price confirmation"
+    )
 
     position_advice = core.get("position_advice")
     if not isinstance(position_advice, dict):
@@ -1449,11 +1483,346 @@ def _apply_hold_watch_dashboard(
         stability["adjusted_score"] = score_calibration.get("adjusted_score")
         stability["final_action"] = score_calibration.get("final_action")
     dashboard["decision_stability"] = stability
+    _apply_deterministic_hold_plan(
+        dashboard,
+        language=language,
+        current_price=current_price,
+        support=support,
+        resistance=resistance,
+    )
 
     if reason and reason not in str(result.risk_warning or ""):
         sep = "；" if language == "zh" else "; "
         result.risk_warning = f"{result.risk_warning}{sep}{reason}" if result.risk_warning else reason
     result.buy_reason = reason or result.buy_reason
+
+
+def _format_price_level(value: Optional[float]) -> str:
+    if value is None:
+        return "N/A"
+    return f"{float(value):.2f}"
+
+
+def _apply_deterministic_hold_plan(
+    dashboard: Dict[str, Any],
+    *,
+    language: str,
+    current_price: Optional[float],
+    support: Optional[float],
+    resistance: Optional[float],
+) -> None:
+    """Replace execution fields with levels derived from structured data."""
+    data_perspective = dashboard.get("data_perspective")
+    data_perspective = data_perspective if isinstance(data_perspective, dict) else {}
+    price_position = data_perspective.get("price_position")
+    price_position = price_position if isinstance(price_position, dict) else {}
+
+    ma5 = _first_numeric_value(price_position.get("ma5"), support)
+    ma10 = _first_numeric_value(price_position.get("ma10"))
+    ma20 = _first_numeric_value(price_position.get("ma20"))
+    trusted_resistance = _first_numeric_value(
+        price_position.get("resistance_level"),
+        resistance,
+    )
+    risk_line = _first_numeric_value(ma10, support, ma20)
+
+    battle = dashboard.get("battle_plan")
+    if not isinstance(battle, dict):
+        battle = {}
+        dashboard["battle_plan"] = battle
+    sniper = battle.get("sniper_points")
+    if not isinstance(sniper, dict):
+        sniper = {}
+        battle["sniper_points"] = sniper
+
+    if language == "zh":
+        sniper.update(
+            {
+                "ideal_buy": (
+                    f"{_format_price_level(ma5)} 元（仅在回踩确认支撑后考虑）"
+                    if ma5 is not None else "数据不足，暂不设置买点"
+                ),
+                "secondary_buy": (
+                    f"{_format_price_level(ma10)} 元（仅在日线支撑确认后考虑）"
+                    if ma10 is not None else "数据不足，暂不设置次优买点"
+                ),
+                "stop_loss": (
+                    f"{_format_price_level(risk_line)} 元（日线收盘失守则减仓或退出）"
+                    if risk_line is not None else "数据不足，暂不设置止损位"
+                ),
+                "take_profit": (
+                    f"{_format_price_level(trusted_resistance)} 元（放量突破前仅视为压力位）"
+                    if trusted_resistance is not None else "缺少有效压力位，不设目标价"
+                ),
+            }
+        )
+        battle["position_strategy"] = {
+            "suggested_position": "观察为主；证据缺失时不新增加仓",
+            "entry_plan": "只在支撑确认或放量突破后重新评估，不在盘前直接建仓",
+            "risk_control": (
+                f"以 {_format_price_level(risk_line)} 元日线收盘为风险检查线"
+                if risk_line is not None else "关键风险线数据不足，维持低仓位或空仓"
+            ),
+        }
+    else:
+        sniper.update(
+            {
+                "ideal_buy": _format_price_level(ma5),
+                "secondary_buy": _format_price_level(ma10),
+                "stop_loss": _format_price_level(risk_line),
+                "take_profit": _format_price_level(trusted_resistance),
+            }
+        )
+        battle["position_strategy"] = {
+            "suggested_position": "Watch only; do not add while evidence is missing",
+            "entry_plan": "Reassess only after support confirmation or a volume-backed breakout",
+            "risk_control": "Use the structured daily support as the risk line",
+        }
+
+    phase_decision = dashboard.get("phase_decision")
+    if not isinstance(phase_decision, dict):
+        phase_decision = {}
+        dashboard["phase_decision"] = phase_decision
+    if language == "zh":
+        phase_decision["immediate_action"] = "等待盘中确认，禁止追高。"
+        phase_decision["watch_conditions"] = [
+            item
+            for item in (
+                f"观察 {_format_price_level(ma5)} 元附近支撑是否有效" if ma5 is not None else None,
+                (
+                    f"观察 {_format_price_level(trusted_resistance)} 元压力位能否放量突破"
+                    if trusted_resistance is not None else None
+                ),
+                "公告、财报和资金流证据补齐后再评估仓位",
+            )
+            if item
+        ]
+    else:
+        phase_decision["immediate_action"] = "Wait for confirmation; do not chase."
+
+
+def enforce_evidence_consistency(
+    result: "AnalysisResult",
+    trend_result: Any = None,
+    fundamental_context: Optional[Dict[str, Any]] = None,
+    *,
+    news_result_count: Optional[int] = None,
+    verified_event_evidence: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    """Fail closed when event/fundamental evidence is missing.
+
+    LLM prose may interpret verified inputs, but it must not turn an empty
+    search into "no bad news" or an instantaneous PE into a historical
+    percentile.  This post-processor rewrites only the affected evidence and
+    execution fields.
+    """
+    if not result:
+        return
+
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    result.dashboard = dashboard
+    language = normalize_report_language(getattr(result, "report_language", "zh"))
+    verified_events = (
+        [item for item in verified_event_evidence if isinstance(item, dict)]
+        if isinstance(verified_event_evidence, list)
+        else None
+    )
+    news_missing = not verified_events if verified_events is not None else news_result_count == 0
+
+    def _block_has_data(name: str) -> bool:
+        if not isinstance(fundamental_context, dict):
+            return False
+        block = fundamental_context.get(name)
+        if not isinstance(block, dict):
+            return False
+        status = str(block.get("status") or "").strip().lower()
+        data = block.get("data")
+        return status in {"ok", "partial"} and isinstance(data, dict) and any(
+            not _is_value_placeholder(value) for value in data.values()
+        )
+
+    growth_missing = not _block_has_data("growth")
+    earnings_missing = not _block_has_data("earnings")
+    financial_missing = growth_missing and earnings_missing
+
+    intelligence = dashboard.get("intelligence")
+    if not isinstance(intelligence, dict):
+        intelligence = {}
+        dashboard["intelligence"] = intelligence
+
+    limitations: List[str] = []
+    if language == "zh":
+        if news_missing:
+            news_limitation = "新闻与公告检索未获得可核验结果，无法排除近期事件风险。"
+            intelligence["sentiment_summary"] = "情报证据缺失，不对消息情绪作判断"
+            intelligence["latest_news"] = news_limitation
+            intelligence["risk_alerts"] = [news_limitation]
+            intelligence["positive_catalysts"] = []
+            result.news_summary = news_limitation
+            result.market_sentiment = "市场情绪不作为独立交易依据；当前缺少可核验事件证据。"
+            limitations.append(news_limitation)
+        elif verified_events:
+            _apply_verified_event_evidence(intelligence, verified_events)
+            result.news_summary = intelligence["latest_news"]
+            result.market_sentiment = "仅列示可追溯事件事实，不把媒体语气或热度作为交易依据。"
+        if financial_missing:
+            financial_limitation = "财报与业绩结构化数据缺失，无法判断盈利质量和估值分位。"
+            intelligence["earnings_outlook"] = financial_limitation
+            result.fundamental_analysis = financial_limitation
+            limitations.append(financial_limitation)
+        if news_missing and financial_missing:
+            result.company_highlights = "缺少可核验公司公告和财报，不评价公司亮点或经营风险。"
+
+        _apply_evidence_first_checklist(
+            dashboard,
+            trend_result=trend_result,
+            news_missing=news_missing,
+            financial_missing=financial_missing,
+            fundamental_context=fundamental_context,
+        )
+
+        if limitations:
+            price_position = (
+                dashboard.get("data_perspective", {}).get("price_position", {})
+                if isinstance(dashboard.get("data_perspective"), dict)
+                else {}
+            )
+            risk_line = _first_numeric_value(
+                price_position.get("ma10") if isinstance(price_position, dict) else None,
+                price_position.get("support_level") if isinstance(price_position, dict) else None,
+            )
+            technical_note = (
+                f"日线收盘跌破 {_format_price_level(risk_line)} 元时重新评估风险。"
+                if risk_line is not None else "关键技术风险线不足，暂不提高仓位。"
+            )
+            result.risk_warning = "；".join(limitations + [technical_note])
+            result.buy_reason = "当前仅有技术结构信号，事件、财报或资金面证据不足，不构成无条件买入依据。"
+            if getattr(result, "decision_type", "") == "hold":
+                trend_dict = _as_dict_for_decision_guard(trend_result)
+                current = _first_numeric_value(
+                    getattr(result, "current_price", None),
+                    trend_dict.get("current_price"),
+                )
+                ma5 = _first_numeric_value(trend_dict.get("ma5"))
+                result.analysis_summary = (
+                    f"现价 {_format_price_level(current)} 元，MA5 为 {_format_price_level(ma5)} 元；"
+                    f"技术结构偏强但{''.join(limitations)}因此维持持有观察，"
+                    "等待价格、量能与证据共同确认。"
+                )
+                result.key_points = "技术数据可核验，事件证据缺失，财报数据缺失，等待条件确认"
+    else:
+        if news_missing:
+            text = "No verifiable news or filing result was retrieved; recent event risk cannot be ruled out."
+            intelligence["latest_news"] = text
+            intelligence["risk_alerts"] = [text]
+            intelligence["positive_catalysts"] = []
+        if financial_missing:
+            intelligence["earnings_outlook"] = (
+                "Structured financial and earnings data is unavailable; profitability and valuation percentile cannot be assessed."
+            )
+
+    phase_decision = dashboard.get("phase_decision")
+    if isinstance(phase_decision, dict) and limitations:
+        existing = phase_decision.get("data_limitations")
+        merged = list(existing) if isinstance(existing, list) else []
+        for item in limitations:
+            if item not in merged:
+                merged.append(item)
+        phase_decision["data_limitations"] = merged[:7]
+
+    _sync_stability_dashboard_fields(result)
+
+
+def _apply_verified_event_evidence(
+    intelligence: Dict[str, Any],
+    events: List[Dict[str, Any]],
+) -> None:
+    """Render event facts from provider objects instead of LLM recollection."""
+    rendered: List[str] = []
+    risks: List[str] = []
+    catalysts: List[str] = []
+    seen: set[tuple[str, str, str]] = set()
+    risk_terms = ("减持", "处罚", "违规", "诉讼", "立案", "亏损", "下滑", "终止", "风险", "问询")
+    catalyst_terms = ("回购", "增持", "中标", "分红", "增长", "扭亏", "合同", "盈利")
+
+    for item in events:
+        title = str(item.get("title") or "").strip()
+        published = str(item.get("published_date") or "").strip()
+        source = str(item.get("source") or "").strip()
+        url = str(item.get("url") or "").strip()
+        if not title or not published or not source or not url:
+            continue
+        identity = (title, published, source)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        fact = f"[{published}][{source}] {title}（{url}）"
+        rendered.append(fact)
+        is_risk = any(term in title for term in risk_terms)
+        if is_risk:
+            risks.append(fact)
+        elif any(term in title for term in catalyst_terms):
+            catalysts.append(fact)
+        if len(rendered) >= 5:
+            break
+
+    intelligence["latest_news"] = "；".join(rendered) if rendered else "无可核验事件条目"
+    intelligence["risk_alerts"] = risks + [
+        "信息检索不等同交易所/公司公告全量核验，操作前仍需核对官方披露。"
+    ]
+    intelligence["positive_catalysts"] = catalysts
+    intelligence["sentiment_summary"] = "仅陈列带日期、来源和链接的事实；未做情绪化定性"
+
+
+def _apply_evidence_first_checklist(
+    dashboard: Dict[str, Any],
+    *,
+    trend_result: Any,
+    news_missing: bool,
+    financial_missing: bool,
+    fundamental_context: Optional[Dict[str, Any]],
+) -> None:
+    trend = _as_dict_for_decision_guard(trend_result)
+    ma5 = _first_numeric_value(trend.get("ma5"))
+    ma10 = _first_numeric_value(trend.get("ma10"))
+    ma20 = _first_numeric_value(trend.get("ma20"))
+    bias = _first_numeric_value(trend.get("bias_ma5"))
+    volume_ratio = _first_numeric_value(trend.get("volume_ratio_5d"))
+
+    checklist: List[str] = []
+    if None not in (ma5, ma10, ma20):
+        bullish = bool(ma5 > ma10 > ma20)
+        checklist.append(
+            ("✅" if bullish else "❌")
+            + f" 结构化均线：MA5 {_format_price_level(ma5)}、"
+            f"MA10 {_format_price_level(ma10)}、MA20 {_format_price_level(ma20)}"
+        )
+    if bias is not None:
+        checklist.append(
+            ("✅" if abs(bias) < 5 else "❌")
+            + f" MA5乖离率 {bias:.2f}%（结构化计算）"
+        )
+    if volume_ratio is not None:
+        checklist.append(f"⚠️ 当日量/5日均量 {volume_ratio:.2f}，仅作量价确认")
+    checklist.append(
+        "⚠️ 财报与业绩数据缺失，不能判断估值分位"
+        if financial_missing else "✅ 财报/业绩字段已取得结构化数据"
+    )
+    checklist.append(
+        "⚠️ 新闻与公告检索无可核验结果，不能表述为“无重大利空”"
+        if news_missing else "⚠️ 已取得带日期来源的事件条目，但不等同官方公告全量排查"
+    )
+    flow_bias, _ = _capital_flow_bias_with_status(fundamental_context)
+    checklist.append(
+        "⚠️ 资金流数据缺失，买入信号不得升级"
+        if flow_bias == "unavailable" else f"⚠️ 资金流状态：{flow_bias}"
+    )
+
+    battle = dashboard.get("battle_plan")
+    if not isinstance(battle, dict):
+        battle = {}
+        dashboard["battle_plan"] = battle
+    battle["action_checklist"] = checklist
 
 
 def _downgrade_buy_without_capital_flow(
