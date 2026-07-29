@@ -3392,6 +3392,67 @@ Sector text.
         assert "极端静止" not in result
         assert "流动性冻结" not in result
 
+    def test_cn_strict_data_review_skips_llm_and_only_renders_verified_facts(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(
+            return_value="未突破万亿，建议仓位30%-40%，上证关注3900点支撑"
+        )
+        ma.config.market_review_strict_data_only = True
+        overview = MarketOverview(
+            date="2026-07-29",
+            indices_attempted=True,
+            market_stats_attempted=True,
+            market_stats_available=True,
+            indices=[
+                MarketIndex(
+                    code="sh000001",
+                    name="上证指数",
+                    current=3828.47,
+                    change_pct=0.40,
+                    amount=1_087_400_000_000.0,
+                ),
+                MarketIndex(
+                    code="sz399001",
+                    name="深证成指",
+                    current=13658.44,
+                    change_pct=1.10,
+                    amount=1_209_200_000_000.0,
+                ),
+            ],
+            up_count=4252,
+            down_count=1215,
+            flat_count=56,
+            limit_up_count=83,
+            limit_down_count=13,
+            total_amount=23110.0,
+            top_sectors=[{"name": "其他金融业", "change_pct": 4.96}],
+        )
+
+        result = ma.generate_market_review(
+            overview,
+            [
+                {
+                    "title": "收盘数据发布",
+                    "source": "交易所",
+                    "published_date": "2026-07-29",
+                }
+            ],
+        )
+
+        ma.analyzer.generate_text.assert_not_called()
+        assert "大盘复盘（严格数据版）" in result
+        assert "上涨 / 下跌 / 平盘：4252 / 1215 / 56" in result
+        assert "上涨占比（不含平盘）：77.8%" in result
+        assert "主要指数平均涨跌幅：+0.75%" in result
+        assert "两市成交额：23110 亿元" in result
+        assert "| 1 | 其他金融业 | +4.96% |" in result
+        assert "收盘数据发布（交易所 / 2026-07-29）" in result
+        assert "不作“放量”或“缩量”判断" in result
+        assert "未突破万亿" not in result
+        assert "30%-40%" not in result
+        assert "3900点支撑" not in result
+
     def test_cn_missing_market_stats_are_not_rendered_as_zero_in_prompt(self):
         from src.market_analyzer import MarketIndex, MarketOverview
 

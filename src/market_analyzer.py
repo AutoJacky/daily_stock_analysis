@@ -13,7 +13,7 @@
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from inspect import getattr_static
 from typing import Optional, Dict, Any, List
@@ -826,6 +826,14 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 ",".join(quality["missing_core_fields"]),
             )
             return self._generate_data_unavailable_review(overview, quality)
+
+        if getattr(self.config, "market_review_strict_data_only", False) is True:
+            logger.info(
+                "[大盘] %s action=generate_review status=deterministic "
+                "reason=strict_data_only",
+                self._log_context(),
+            )
+            return self._generate_strict_data_review(overview, news)
 
         backend_error = self._get_analyzer_generation_backend_config_error()
         if backend_error is not None:
@@ -1956,6 +1964,105 @@ Output the report content directly, no extra commentary.
 
 ### 四、风险提示
 - 本报告仅用于提示数据异常，不应视为市场状态或投资信号。
+- 建议仅供参考，不构成投资建议。
+
+---
+*校验时间: {review_time}*
+"""
+
+    def _generate_strict_data_review(self, overview: MarketOverview, news: List) -> str:
+        """Render a deterministic review without allowing an LLM to rewrite facts."""
+        review_time = datetime.now().strftime("%H:%M")
+        valid_indices = [
+            index
+            for index in overview.indices
+            if self._is_positive_number(index.current)
+        ]
+        strict_overview = replace(overview, indices=valid_indices)
+        indices_block = self._build_indices_block(strict_overview)
+        sector_block = self._build_sector_block(overview)
+        news_block = self._build_news_block(news)
+        light = self.build_market_light_snapshot(strict_overview)
+        participants = overview.up_count + overview.down_count
+        up_ratio = overview.up_count / participants if participants else 0.0
+        index_changes = [
+            float(index.change_pct)
+            for index in valid_indices
+            if index.change_pct is not None
+        ]
+        average_change = (
+            sum(index_changes) / len(index_changes)
+            if index_changes
+            else 0.0
+        )
+
+        if self._get_review_language() == "en":
+            return f"""## {overview.date} Market Recap — Verified Data Edition
+
+> Structured market signal: **{light['temperature_label']}** ({light['score']}/100). This edition contains only programmatically derived market facts and source-labelled news titles.
+
+### 1. Validation Status
+- **Core market data**: passed
+- **Valid major indices**: {len(valid_indices)}
+- **Breadth coverage**: {overview.up_count + overview.down_count + overview.flat_count} securities
+- **Aggregate turnover**: {overview.total_amount:.0f} {self._get_turnover_unit_label()}
+
+### 2. Market Breadth & Liquidity
+- Advancers / decliners / flat: {overview.up_count} / {overview.down_count} / {overview.flat_count}
+- Advancer ratio excluding flat issues: {up_ratio:.1%}
+- Limit-up / limit-down: {overview.limit_up_count} / {overview.limit_down_count}
+- Average major-index change: {average_change:+.2f}%
+- Aggregate turnover: {overview.total_amount:.0f} {self._get_turnover_unit_label()}
+- No expanding/contracting-turnover claim is made because no prior-session comparable value was validated.
+
+### 3. Major Indices
+{indices_block or "- No validated index data is available."}
+
+### 4. Sector / Theme Rankings
+{sector_block or "- No validated sector or theme rankings are available."}
+
+### 5. Source-labelled News
+{news_block or "- No source-labelled news item is available."}
+
+### 6. Data Boundary
+- No unsupported support/resistance level, causal narrative, position range, or next-session price target is generated.
+- Signal labels are deterministic summaries of breadth, index change, and limit-up/down data; they are not investment instructions.
+- For reference only, not investment advice.
+
+---
+*Validation Time: {review_time}*
+"""
+
+        return f"""## {overview.date} 大盘复盘（严格数据版）
+
+> 结构化盘面信号：**{light['temperature_label']}**（{light['score']}/100）。本报告只呈现程序计算的行情事实和带来源标识的新闻标题。
+
+### 一、数据校验
+- **核心行情数据**：通过
+- **有效主要指数**：{len(valid_indices)} 个
+- **市场宽度覆盖**：{overview.up_count + overview.down_count + overview.flat_count} 只证券
+- **两市成交额**：{overview.total_amount:.0f} 亿元
+
+### 二、市场宽度与成交
+- 上涨 / 下跌 / 平盘：{overview.up_count} / {overview.down_count} / {overview.flat_count}
+- 上涨占比（不含平盘）：{up_ratio:.1%}
+- 涨停 / 跌停：{overview.limit_up_count} / {overview.limit_down_count}
+- 主要指数平均涨跌幅：{average_change:+.2f}%
+- 两市成交额：{overview.total_amount:.0f} 亿元
+- 因未校验前一交易日的可比成交额，本报告不作“放量”或“缩量”判断。
+
+### 三、主要指数
+{indices_block or "- 暂无通过校验的指数数据。"}
+
+### 四、板块与题材排名
+{sector_block or "- 暂无通过校验的板块或题材排名。"}
+
+### 五、带来源的市场线索
+{news_block or "- 暂无带来源标识的市场新闻。"}
+
+### 六、数据边界
+- 不生成未经行情数据支持的支撑位、压力位、因果叙事、仓位区间或次日目标价。
+- 盘面信号仅由涨跌家数、指数涨跌幅和涨跌停数据确定性计算，不构成交易指令。
 - 建议仅供参考，不构成投资建议。
 
 ---
