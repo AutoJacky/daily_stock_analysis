@@ -350,8 +350,11 @@ class AkshareFundamentalAdapter:
         if forecast_df is not None:
             row = _extract_latest_row(forecast_df, stock_code)
             if row is not None:
+                result["earnings"]["forecast_date"] = _normalize_report_date(
+                    _pick_by_keywords(row, ["公告日期", "报告日期", "报告期", "日期"])
+                )
                 result["earnings"]["forecast_summary"] = _safe_str(
-                    _pick_by_keywords(row, ["预告", "业绩变动", "内容", "摘要", "公告"])
+                    _pick_by_keywords(row, ["预告", "业绩变动", "内容", "摘要"])
                 )[:200]
                 result["source_chain"].append(f"earnings_forecast:{forecast_source}")
 
@@ -364,8 +367,11 @@ class AkshareFundamentalAdapter:
         if quick_df is not None:
             row = _extract_latest_row(quick_df, stock_code)
             if row is not None:
+                result["earnings"]["quick_report_date"] = _normalize_report_date(
+                    _pick_by_keywords(row, ["公告日期", "报告日期", "报告期", "日期"])
+                )
                 result["earnings"]["quick_report_summary"] = _safe_str(
-                    _pick_by_keywords(row, ["快报", "摘要", "公告", "说明"])
+                    _pick_by_keywords(row, ["快报", "摘要", "说明"])
                 )[:200]
                 result["source_chain"].append(f"earnings_quick:{quick_source}")
 

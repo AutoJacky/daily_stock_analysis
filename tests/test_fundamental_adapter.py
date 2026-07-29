@@ -91,8 +91,12 @@ class TestFundamentalAdapter(unittest.TestCase):
                 "净利润同比": [9.5],
             }
         )
-        forecast_df = pd.DataFrame({"股票代码": ["600519"], "预告": ["预增"]})
-        quick_df = pd.DataFrame({"股票代码": ["600519"], "快报": ["快报摘要"]})
+        forecast_df = pd.DataFrame(
+            {"股票代码": ["600519"], "公告日期": [within_ttm], "预告": ["预增"]}
+        )
+        quick_df = pd.DataFrame(
+            {"股票代码": ["600519"], "公告日期": [within_ttm], "快报": ["快报摘要"]}
+        )
         dividend_df = pd.DataFrame(
             {
                 "股票代码": ["600519", "600519", "600519", "600519"],
@@ -121,6 +125,10 @@ class TestFundamentalAdapter(unittest.TestCase):
         self.assertEqual(financial_report.get("net_profit_parent"), 300.0)
         self.assertEqual(financial_report.get("operating_cash_flow"), 500.0)
         self.assertEqual(financial_report.get("roe"), 18.2)
+        self.assertEqual(result["earnings"].get("forecast_date"), within_ttm)
+        self.assertEqual(result["earnings"].get("forecast_summary"), "预增")
+        self.assertEqual(result["earnings"].get("quick_report_date"), within_ttm)
+        self.assertEqual(result["earnings"].get("quick_report_summary"), "快报摘要")
 
         dividend_payload = result["earnings"].get("dividend", {})
         events = dividend_payload.get("events", [])

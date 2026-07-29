@@ -4069,7 +4069,10 @@ class SearchService:
             search_dimensions = [
                 {
                     'name': 'latest_news',
-                    'query': f"{effective_name} {stock_code} latest news events",
+                    'query': (
+                        f"{effective_name} {stock_code} latest news company events "
+                        "regulation policy export controls industry impact"
+                    ),
                     'desc': '最新消息',
                     'tavily_topic': 'news',
                     'strict_freshness': True,
@@ -4116,7 +4119,10 @@ class SearchService:
             search_dimensions = [
                 {
                     'name': 'latest_news',
-                    'query': f"{stock_name} {stock_code} 最新 新闻 重大 事件",
+                    'query': (
+                        f"{stock_name} {stock_code} 最新 新闻 重大 事件 "
+                        "政策 监管 行业政策 影响"
+                    ),
                     'desc': '最新消息',
                     'tavily_topic': 'news',
                     'strict_freshness': True,
@@ -4322,7 +4328,10 @@ class SearchService:
                 # 增加显示条数
                 for i, r in enumerate(resp.results[:4], 1):
                     date_str = f" [{r.published_date}]" if r.published_date else ""
-                    lines.append(f"  {i}. {r.title}{date_str}")
+                    source_label = str(r.source or resp.provider or "来源未知").strip()
+                    lines.append(f"  {i}. 【{source_label}】{r.title}{date_str}")
+                    if r.url:
+                        lines.append(f"     链接: {r.url}")
                     # 如果摘要太短，可能信息量不足
                     snippet = r.snippet[:150] if len(r.snippet) > 20 else r.snippet
                     lines.append(f"     {snippet}...")

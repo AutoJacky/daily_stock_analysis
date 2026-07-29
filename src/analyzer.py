@@ -106,6 +106,18 @@ from src.market_structure_prompt import format_market_structure_prompt_section
 
 logger = logging.getLogger(__name__)
 
+EVIDENCE_DISCIPLINE_PROMPT_ZH = """
+## 冷静证据纪律（最高优先级）
+
+1. **证据优先级**：交易所/监管机构/公司公告与正式财报 > 结构化行情和财务字段 > 有明确来源与日期的主流媒体 > 券商观点 > 市场情绪。
+2. **事实与推断分离**：先写可核验事实，再写影响路径和推断；不得把研报观点、新闻摘要或市场传闻表述为公司事实。
+3. **影响路径必须完整**：政策、公告或业绩事件必须按“事件 → 收入/成本/现金流/估值影响 → 技术面是否确认 → 操作条件”解释。
+4. **禁止情绪主导**：不得仅凭热度、单日涨跌、单条新闻或媒体语气给出买入/卖出。积极结论至少需要两个独立维度确认，且其中至少一个来自技术结构或结构化基本面。
+5. **财务口径约束**：实际财报、业绩预告、业绩快报和分析师预测必须明确区分；缺少报告期、公告日期或来源时，只能标为“待核实”，不得作为加仓依据。
+6. **缺失即降级**：核心行情、财报/业绩或事件来源缺失时，明确列入 `data_limitations`，降低置信度；不得用常识或历史印象补齐。
+7. **可追溯输出**：`latest_news`、`risk_alerts`、`positive_catalysts` 中的事件必须保留日期与来源；无法确认日期或来源的事件不得进入操作结论。
+"""
+
 
 def _localized_text(language: Any, *, en: str, zh: str, ko: str) -> str:
     """Pick a deterministic fallback string for the report language (zh/en/ko)."""
@@ -1891,6 +1903,8 @@ class GeminiAnalyzer:
 
 """ + CANONICAL_DECISION_SCALE_PROMPT_ZH + """
 
+""" + EVIDENCE_DISCIPLINE_PROMPT_ZH + """
+
 ## 输出格式：决策仪表盘 JSON
 
 请严格按照以下 JSON 格式输出，这是一个完整的【决策仪表盘】：
@@ -2078,6 +2092,8 @@ class GeminiAnalyzer:
 {skills_section}
 
 """ + CANONICAL_DECISION_SCALE_PROMPT_ZH + """
+
+""" + EVIDENCE_DISCIPLINE_PROMPT_ZH + """
 
 ## 输出格式：决策仪表盘 JSON
 
@@ -3811,6 +3827,16 @@ class GeminiAnalyzer:
             if isinstance(earnings_block, dict)
             else {}
         )
+        growth_block = (
+            fundamental_context.get("growth", {})
+            if isinstance(fundamental_context, dict)
+            else {}
+        )
+        growth_data = (
+            growth_block.get("data", {})
+            if isinstance(growth_block, dict)
+            else {}
+        )
         financial_report = (
             earnings_data.get("financial_report", {})
             if isinstance(earnings_data, dict)
@@ -3828,8 +3854,18 @@ class GeminiAnalyzer:
             ttm_cash = dividend_metrics.get("ttm_cash_dividend_per_share", "N/A")
             ttm_count = dividend_metrics.get("ttm_event_count", "N/A")
             report_date = financial_report.get("report_date", "N/A")
+            forecast_summary = earnings_data.get("forecast_summary", "N/A")
+            forecast_date = earnings_data.get("forecast_date", "N/A")
+            quick_report_summary = earnings_data.get("quick_report_summary", "N/A")
+            quick_report_date = earnings_data.get("quick_report_date", "N/A")
+            source_chain = (
+                fundamental_context.get("source_chain", [])
+                if isinstance(fundamental_context, dict)
+                else []
+            )
+            source_text = json.dumps(source_chain[:8], ensure_ascii=False, default=str)
             prompt += f"""
-### 财报与分红（价值投资口径）
+### 财报、业绩与分红（冷静基本面口径）
 | 指标 | 数值 | 说明 |
 |------|------|------|
 | 最近报告期 | {report_date} | 来自结构化财报字段 |
@@ -3837,11 +3873,20 @@ class GeminiAnalyzer:
 | 归母净利润 | {financial_report.get('net_profit_parent', 'N/A')} | |
 | 经营现金流 | {financial_report.get('operating_cash_flow', 'N/A')} | |
 | ROE | {financial_report.get('roe', 'N/A')} | |
+| 营收同比 | {growth_data.get('revenue_yoy', 'N/A')}% | 实际财务指标 |
+| 归母净利润同比 | {growth_data.get('net_profit_yoy', 'N/A')}% | 实际财务指标 |
+| 毛利率 | {growth_data.get('gross_margin', 'N/A')}% | |
+| 业绩预告日期 | {forecast_date} | 日期缺失时不得作为加仓依据 |
+| 业绩预告摘要 | {forecast_summary} | 预告口径，不等同正式财报 |
+| 业绩快报日期 | {quick_report_date} | 日期缺失时不得作为加仓依据 |
+| 业绩快报摘要 | {quick_report_summary} | 快报口径，不等同正式财报 |
 | 近12个月每股现金分红 | {ttm_cash} | 仅现金分红、税前口径 |
 | TTM 股息率 | {ttm_yield} | 公式：近12个月每股现金分红 / 当前价格 × 100% |
 | TTM 分红事件数 | {ttm_count} | |
 
-> 若上述字段为 N/A 或缺失，请明确写“数据缺失，无法判断”，禁止编造。
+> 基本面覆盖状态：growth={growth_block.get('status', 'missing')}，earnings={earnings_block.get('status', 'missing')}。
+> 数据来源链：{source_text or '[]'}。
+> 若上述字段为 N/A、日期缺失或来源不可追溯，请明确写“数据缺失，无法判断/待核实”，禁止编造，且不得据此升级为买入。
 """
 
         capital_flow_block = (
@@ -4067,12 +4112,15 @@ class GeminiAnalyzer:
             prompt += f"""
 以下是 **{stock_name}({code})** 近{news_window_days}日的新闻搜索结果，请重点提取：
 1. 🚨 **风险警报**：减持、处罚、利空
-2. 🎯 **利好催化**：业绩、合同、政策
+2. 🎯 **利好催化**：业绩、合同、政策（必须解释影响收入/成本/现金流/估值的路径）
 3. 📊 **业绩预期**：年报预告、业绩快报
-4. 🕒 **时间规则（强制）**：
-   - 输出到 `risk_alerts` / `positive_catalysts` / `latest_news` 的每一条都必须带具体日期（YYYY-MM-DD）
+4. 🏛️ **政策与监管**：只采用有明确发布主体和日期的政策、监管或交易所信息
+5. 🕒 **时间与来源规则（强制）**：
+   - 输出到 `risk_alerts` / `positive_catalysts` / `latest_news` 的每一条都必须带具体日期（YYYY-MM-DD）和来源
    - 超出近{news_window_days}日窗口的新闻一律忽略
    - 时间未知、无法确定发布日期的新闻一律忽略
+   - 来源未知或链接不可追溯的新闻不得进入操作结论
+   - 公司公告/正式财报与媒体报道冲突时，以公司公告/正式财报为准并明确指出冲突
 
 ```
 {news_context}
@@ -4088,8 +4136,9 @@ class GeminiAnalyzer:
             prompt += """
 ⚠️ **数据缺失警告**
 由于接口限制，当前无法获取完整的实时行情和技术指标数据。
-请 **忽略上述表格中的 N/A 数据**，重点依据 **【📰 舆情情报】** 中的新闻进行基本面和情绪面分析。
+请 **忽略上述表格中的 N/A 数据**；新闻只能作为事件线索，不能替代行情与财报数据，也不能单独触发买入。
 在回答技术面问题（如均线、乖离率）时，请直接说明“数据缺失，无法判断”，**严禁编造数据**。
+必须降低 `confidence_level`，并把缺失字段写入 `dashboard.phase_decision.data_limitations`。
 """
 
         # 明确的输出要求
@@ -4142,7 +4191,8 @@ class GeminiAnalyzer:
 - **持仓分类建议**：空仓者怎么做 vs 持仓者怎么做
 - **具体狙击点位**：买入价、止损价、目标价（精确到分）
 - **检查清单**：每项用 ✅/⚠️/❌ 标记
-- **消息面时间合规**：`latest_news`、`risk_alerts`、`positive_catalysts` 不得包含超出近{news_window_days}日或时间未知的信息
+- **消息面可追溯**：`latest_news`、`risk_alerts`、`positive_catalysts` 不得包含超出近{news_window_days}日、日期未知或来源未知的信息
+- **政策/业绩影响路径**：不得只写“利好/利空”，必须说明对收入、成本、现金流或估值的影响及技术确认条件
 - **技术面一致性**：严禁把“空头排列”和“多头排列”等互斥结论同时当作有效依据；若基本面/事件面与技术面冲突，必须明确写“事件先行、技术待确认”或“基本面偏多，但技术面尚未确认”
  
 请输出完整的 JSON 格式决策仪表盘。"""

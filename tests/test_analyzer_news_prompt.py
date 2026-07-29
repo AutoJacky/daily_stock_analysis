@@ -175,12 +175,26 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
             "date": "2026-03-16",
             "today": {},
             "fundamental_context": {
+                "growth": {
+                    "status": "ok",
+                    "data": {
+                        "revenue_yoy": 12.5,
+                        "net_profit_yoy": 9.8,
+                        "gross_margin": 91.2,
+                    },
+                },
                 "earnings": {
+                    "status": "ok",
                     "data": {
                         "financial_report": {"report_date": "2025-12-31", "revenue": 1000},
+                        "forecast_date": "2026-03-10",
+                        "forecast_summary": "预计净利润同比增长",
+                        "quick_report_date": "2026-03-12",
+                        "quick_report_summary": "业绩快报已披露",
                         "dividend": {"ttm_cash_dividend_per_share": 1.2, "ttm_dividend_yield_pct": 2.4},
                     }
-                }
+                },
+                "source_chain": [{"provider": "akshare", "result": "ok"}],
             },
         }
         fake_cfg = SimpleNamespace(
@@ -194,8 +208,28 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         self.assertIn("每一条都必须带具体日期（YYYY-MM-DD）", prompt)
         self.assertIn("超出近7日窗口的新闻一律忽略", prompt)
         self.assertIn("时间未知、无法确定发布日期的新闻一律忽略", prompt)
-        self.assertIn("财报与分红（价值投资口径）", prompt)
+        self.assertIn("财报、业绩与分红（冷静基本面口径）", prompt)
+        self.assertIn("营收同比", prompt)
+        self.assertIn("12.5%", prompt)
+        self.assertIn("业绩预告日期", prompt)
+        self.assertIn("2026-03-10", prompt)
+        self.assertIn("业绩快报日期", prompt)
+        self.assertIn("2026-03-12", prompt)
+        self.assertIn("公司公告/正式财报与媒体报道冲突时", prompt)
+        self.assertIn("日期未知或来源未知", prompt)
         self.assertIn("禁止编造", prompt)
+
+    def test_analysis_prompt_enforces_cold_evidence_hierarchy(self) -> None:
+        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
+            analyzer = GeminiAnalyzer()
+
+        prompt = analyzer._get_analysis_system_prompt("zh", stock_code="600519")
+
+        self.assertIn("冷静证据纪律", prompt)
+        self.assertIn("交易所/监管机构/公司公告与正式财报", prompt)
+        self.assertIn("禁止情绪主导", prompt)
+        self.assertIn("事件 → 收入/成本/现金流/估值影响", prompt)
+        self.assertIn("缺少报告期、公告日期或来源时", prompt)
 
     def test_prompt_includes_capital_flow_as_operation_filter(self) -> None:
         with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
