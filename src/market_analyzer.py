@@ -1995,6 +1995,70 @@ Output the report content directly, no extra commentary.
             if index_changes
             else 0.0
         )
+        score = int(light["score"])
+        if score >= 75:
+            position_range = "60%-80%"
+            posture_zh = "进攻"
+            posture_en = "offensive"
+        elif score >= 60:
+            position_range = "40%-60%"
+            posture_zh = "偏进攻"
+            posture_en = "constructive"
+        elif score >= 45:
+            position_range = "20%-40%"
+            posture_zh = "均衡"
+            posture_en = "balanced"
+        else:
+            position_range = "0%-20%"
+            posture_zh = "防守"
+            posture_en = "defensive"
+
+        mood_code = self.profile.mood_index_code
+        reference_index = next(
+            (
+                index
+                for index in valid_indices
+                if index.code == mood_code or index.code.endswith(mood_code)
+            ),
+            valid_indices[0] if valid_indices else None,
+        )
+        reference_levels_valid = bool(
+            reference_index
+            and self._is_positive_number(reference_index.high)
+            and self._is_positive_number(reference_index.low)
+            and float(reference_index.low)
+            <= float(reference_index.current)
+            <= float(reference_index.high)
+        )
+        if reference_levels_valid:
+            add_trigger_en = (
+                f"A 30-minute close above {reference_index.name} "
+                f"{reference_index.high:.2f}, with the live advancer ratio at or above 60%."
+            )
+            reduce_trigger_en = (
+                f"A 30-minute close below {reference_index.name} "
+                f"{reference_index.low:.2f}, or the live advancer ratio at or below 40%."
+            )
+            add_trigger_zh = (
+                f"{reference_index.name} 30分钟级别收于 {reference_index.high:.2f} 点上方，"
+                "且实时上涨占比不低于60%。"
+            )
+            reduce_trigger_zh = (
+                f"{reference_index.name} 30分钟级别收于 {reference_index.low:.2f} 点下方，"
+                "或实时上涨占比不高于40%。"
+            )
+        else:
+            add_trigger_en = "Unavailable because the reference index high/low did not pass validation."
+            reduce_trigger_en = "Unavailable because the reference index high/low did not pass validation."
+            add_trigger_zh = "参考指数高低点未通过校验，本次不提供数值型加仓触发位。"
+            reduce_trigger_zh = "参考指数高低点未通过校验，本次不提供数值型减仓触发位。"
+
+        dimensions = light.get("dimensions") or {}
+        breadth_score = int((dimensions.get("breadth") or {}).get("score", 50))
+        index_score = int((dimensions.get("index") or {}).get("score", 50))
+        limit_score = int((dimensions.get("limit") or {}).get("score", 50))
+        focus_text = self._format_ranking_summary(overview.top_sectors, limit=3)
+        avoid_text = self._format_ranking_summary(overview.bottom_sectors, limit=3)
 
         if self._get_review_language() == "en":
             return f"""## {overview.date} Market Recap — Verified Data Edition
@@ -2024,8 +2088,17 @@ Output the report content directly, no extra commentary.
 ### 5. Source-labelled News
 {news_block or "- No source-labelled news item is available."}
 
-### 6. Data Boundary
-- No unsupported support/resistance level, causal narrative, position range, or next-session price target is generated.
+### 6. Next-session Quant Plan
+- **Rule posture**: {posture_en}; model portfolio exposure band {position_range}.
+- **Score formula**: breadth {breadth_score} × 45% + index {index_score} × 35% + limit-up/down {limit_score} × 20% = {score}/100.
+- **Add-risk trigger**: {add_trigger_en} If confirmed, move only toward the upper bound of the exposure band.
+- **Reduce-risk trigger**: {reduce_trigger_en} If confirmed, move toward the lower bound of the exposure band.
+- **Otherwise**: keep exposure inside the band and do not chase an unconfirmed breakout.
+- **Strength watchlist**: {focus_text or "No validated leading-sector ranking."}
+- **Weakness / avoid list**: {avoid_text or "No validated lagging-sector ranking."}
+
+### 7. Data Boundary
+- Position ranges and triggers come from the fixed rules printed above; no LLM-generated support/resistance level or price target is used.
 - Signal labels are deterministic summaries of breadth, index change, and limit-up/down data; they are not investment instructions.
 - For reference only, not investment advice.
 
@@ -2060,8 +2133,17 @@ Output the report content directly, no extra commentary.
 ### 五、带来源的市场线索
 {news_block or "- 暂无带来源标识的市场新闻。"}
 
-### 六、数据边界
-- 不生成未经行情数据支持的支撑位、压力位、因果叙事、仓位区间或次日目标价。
+### 六、次日量化计划
+- **规则姿态**：{posture_zh}；模型组合仓位区间 {position_range}。
+- **评分公式**：市场宽度 {breadth_score} × 45% + 指数强弱 {index_score} × 35% + 涨跌停结构 {limit_score} × 20% = {score}/100。
+- **加仓触发**：{add_trigger_zh}满足时只向仓位区间上限移动。
+- **减仓触发**：{reduce_trigger_zh}满足时向仓位区间下限移动。
+- **其余情况**：仓位保持在区间内，不追未经确认的突破。
+- **强势观察池**：{focus_text or "暂无通过校验的领涨板块排名。"}
+- **弱势/回避池**：{avoid_text or "暂无通过校验的领跌板块排名。"}
+
+### 七、数据边界
+- 仓位区间和触发条件均来自上方固定规则，不采用大模型生成的支撑位、压力位或目标价。
 - 盘面信号仅由涨跌家数、指数涨跌幅和涨跌停数据确定性计算，不构成交易指令。
 - 建议仅供参考，不构成投资建议。
 

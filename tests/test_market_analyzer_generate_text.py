@@ -3410,6 +3410,8 @@ Sector text.
                     name="上证指数",
                     current=3828.47,
                     change_pct=0.40,
+                    high=3845.77,
+                    low=3782.48,
                     amount=1_087_400_000_000.0,
                 ),
                 MarketIndex(
@@ -3449,6 +3451,11 @@ Sector text.
         assert "| 1 | 其他金融业 | +4.96% |" in result
         assert "收盘数据发布（交易所 / 2026-07-29）" in result
         assert "不作“放量”或“缩量”判断" in result
+        assert "### 六、次日量化计划" in result
+        assert "模型组合仓位区间 40%-60%" in result
+        assert "上证指数 30分钟级别收于 3845.77 点上方" in result
+        assert "上证指数 30分钟级别收于 3782.48 点下方" in result
+        assert "市场宽度 77 × 45% + 指数强弱 59 × 35%" in result
         assert "未突破万亿" not in result
         assert "30%-40%" not in result
         assert "3900点支撑" not in result
