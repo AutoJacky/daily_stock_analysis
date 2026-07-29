@@ -144,6 +144,8 @@ def test_premarket_high_confidence_immediate_action_is_conservative() -> None:
     assert "confidence_capped_non_intraday_action" in adjustments
     assert result.confidence_level == "低"
     assert result.dashboard["phase_decision"]["immediate_action"] == "等待盘中确认，禁止追高。"
+    assert result.dashboard["phase_decision"]["action_window"] == "盘前计划"
+    assert result.dashboard["phase_decision"]["next_check_time"] == "开盘后30分钟"
 
 
 def test_premarket_medium_confidence_immediate_action_rewrites_action_only() -> None:

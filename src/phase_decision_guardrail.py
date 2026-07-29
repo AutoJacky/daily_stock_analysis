@@ -155,6 +155,9 @@ def apply_phase_decision_guardrails(
     phase_decision["data_limitations"] = merged_limitations
 
     phase = _safe_text(phase_summary.get("phase")) if phase_summary else ""
+    if phase:
+        phase_decision["action_window"] = _phase_action_window(phase, language)
+        phase_decision["next_check_time"] = _phase_next_check(phase, language)
     core_degraded = _has_core_degraded_block(overview)
     initially_high_confidence = _is_high_confidence(getattr(result, "confidence_level", ""))
 
@@ -420,6 +423,50 @@ def _safe_wait_action(language: str) -> str:
         zh="等待盘中确认，禁止追高。",
         ko="장중 확인을 기다리고 추격 매수하지 마세요.",
     )
+
+
+def _phase_action_window(phase: str, language: str) -> str:
+    zh = {
+        "premarket": "盘前计划",
+        "intraday": "盘中跟踪",
+        "lunch_break": "午间确认",
+        "closing_auction": "收盘前风控",
+        "postmarket": "盘后复盘",
+        "non_trading": "非交易日观察",
+        "unknown": "数据阶段待确认",
+    }
+    en = {
+        "premarket": "Premarket plan",
+        "intraday": "Intraday tracking",
+        "lunch_break": "Midday confirmation",
+        "closing_auction": "Closing risk control",
+        "postmarket": "Post-market review",
+        "non_trading": "Non-trading-day watch",
+        "unknown": "Phase pending confirmation",
+    }
+    return (en if language == "en" else zh).get(phase, zh["unknown"])
+
+
+def _phase_next_check(phase: str, language: str) -> str:
+    zh = {
+        "premarket": "开盘后30分钟",
+        "intraday": "30分钟后或观察条件触发时",
+        "lunch_break": "午后开盘30分钟后",
+        "closing_auction": "收盘后复核",
+        "postmarket": "下一交易日开盘前",
+        "non_trading": "下一交易日开盘前",
+        "unknown": "数据阶段确认后",
+    }
+    en = {
+        "premarket": "30 minutes after market open",
+        "intraday": "In 30 minutes or when a watch condition triggers",
+        "lunch_break": "30 minutes after the afternoon session opens",
+        "closing_auction": "After the close",
+        "postmarket": "Before the next trading session",
+        "non_trading": "Before the next trading session",
+        "unknown": "After the market phase is confirmed",
+    }
+    return (en if language == "en" else zh).get(phase, zh["unknown"])
 
 
 def _patterns(language: str) -> tuple[str, ...]:
