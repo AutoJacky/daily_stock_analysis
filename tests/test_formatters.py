@@ -31,18 +31,20 @@ from src.formatters import (
 class TestPushplusMobileHtml(unittest.TestCase):
     def test_uses_mobile_typography_and_semantic_highlights(self):
         html = markdown_to_pushplus_html(
-            "# 📈 股票分析\n\n## 核心结论\n\n"
+            "# 📈 股票分析\n\n## 核心结论\n\n### 贵州茅台\n\n"
             "**风险警报：** 数据缺失\n\n**买入：** 等待确认\n\n"
             "**观望：** 不追高\n\n**减仓：** 跌破止损\n\n"
             "| 指数 | 涨跌 |\n|---|---|\n| 上证 | +0.5% |"
         )
 
         self.assertIn("font-size:23px", html)
-        self.assertIn("border-left:4px solid #3973e6", html)
-        self.assertIn("background:#fff1f0", html)
+        self.assertIn("background:#102a56", html)
+        self.assertIn("background:#4938a2", html)
+        self.assertIn("background:#ffe4e8", html)
         self.assertIn("color:#c4320a", html)
-        self.assertIn("color:#b54708", html)
+        self.assertIn("color:#93370d", html)
         self.assertIn("color:#067647", html)
+        self.assertIn("box-shadow:0 3px 10px", html)
         self.assertIn("-webkit-text-size-adjust:100%", html)
         self.assertIn("table-layout:fixed", html)
         self.assertNotIn("min-width:520px", html)
@@ -61,6 +63,25 @@ class TestPushplusMobileHtml(unittest.TestCase):
 
         self.assertNotIn("<script>", html)
         self.assertIn("&lt;script&gt;", html)
+
+    def test_adds_plain_language_glossary_without_changing_report_facts(self):
+        html = markdown_to_pushplus_html(
+            "# 大盘复盘\n\n成交量放大，RSI为68，PE高于行业均值。"
+        )
+
+        self.assertIn("新手术语小抄", html)
+        self.assertIn("成交量/成交额", html)
+        self.assertIn("RSI", html)
+        self.assertIn("市盈率（PE）", html)
+        self.assertIn("RSI为68", html)
+
+    def test_does_not_duplicate_digest_glossary(self):
+        html = markdown_to_pushplus_html(
+            "## 不懂术语就看这里\n\n- **综合分：** 只用于排序。"
+        )
+
+        self.assertEqual(html.count("不懂术语就看这里"), 1)
+        self.assertNotIn("新手术语小抄", html)
 
 
 class TestChunkContentByMaxWords(unittest.TestCase):

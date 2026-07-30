@@ -701,7 +701,11 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         digest = service.generate_pushplus_digest(results)
         self.assertIn("自选股1（600000）", digest)
         self.assertIn("自选股34（600033）", digest)
-        self.assertIn("数据缺口", digest)
+        self.assertIn("一分钟看懂", digest)
+        self.assertIn("你现在怎么做", digest)
+        self.assertIn("数据可信度", digest)
+        self.assertIn("全部自选，一眼分组", digest)
+        self.assertIn("综合分：** 只用于同批股票排序，不是上涨概率", digest)
         self.assertTrue(service.send_to_pushplus(digest))
         self.assertLessEqual(mock_post.call_count, 2)
         for request in mock_post.call_args_list:
@@ -737,7 +741,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             failed_items=[("000001", "provider unavailable")],
         )
 
-        self.assertIn("本轮请求 2 只｜成功 1｜失败 1", digest)
+        self.assertIn("共看了 2 只股票：成功 1 只，失败 1 只", digest)
         self.assertIn(
             "[公司发布回购公告](https://www.sse.com.cn/disclosure/example)",
             digest,
@@ -757,7 +761,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             ],
         )
 
-        self.assertIn("本轮请求 2 只｜成功 0｜失败 2", digest)
+        self.assertIn("共看了 2 只股票：成功 0 只，失败 2 只", digest)
         self.assertIn("600519", digest)
         self.assertIn("000001", digest)
 

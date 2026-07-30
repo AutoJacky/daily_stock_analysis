@@ -257,24 +257,175 @@ def _compact_report_links(markdown_text: str) -> str:
 
 
 def _pushplus_highlight_strong(match: re.Match) -> str:
-    """Apply restrained semantic colour to bold report labels."""
+    """Apply high-contrast semantic colour to bold report labels."""
 
     inner = match.group(1)
     plain = re.sub(r"<[^>]+>", "", inner).strip().lower()
-    style = "font-weight:700;color:#172033;"
-    if any(word in plain for word in ("风险", "警报", "缺失", "异常", "不可用", "止损")):
-        style += "background:#fff1f0;color:#b42318;padding:2px 5px;border-radius:4px;"
-    elif any(word in plain for word in ("买入", "加仓", "强势", "多头")):
-        style += "background:#fff1f0;color:#c4320a;padding:2px 5px;border-radius:4px;"
+    style = "font-weight:800;color:#172033;"
+    if any(
+        word in plain
+        for word in ("风险", "警报", "缺失", "异常", "不可用", "止损", "失效")
+    ):
+        style += (
+            "display:inline-block;background:#ffe4e8;color:#b42318;"
+            "padding:3px 7px;border-radius:6px;"
+        )
+    elif any(word in plain for word in ("买入", "加仓", "强势", "多头", "机会")):
+        style += (
+            "display:inline-block;background:#ffebe7;color:#c4320a;"
+            "padding:3px 7px;border-radius:6px;"
+        )
     elif any(word in plain for word in ("减仓", "卖出", "回避", "空头")):
-        style += "background:#ecfdf3;color:#067647;padding:2px 5px;border-radius:4px;"
-    elif any(word in plain for word in ("结论", "核心", "策略", "计划", "重点", "建议")):
-        style += "background:#eef4ff;color:#174ea6;padding:2px 5px;border-radius:4px;"
-    elif any(word in plain for word in ("数据", "事实", "验证", "财报", "质量")):
-        style += "background:#ecfdf3;color:#067647;padding:2px 5px;border-radius:4px;"
-    elif any(word in plain for word in ("观察", "等待", "关注", "中性", "持有", "观望")):
-        style += "background:#fffaeb;color:#b54708;padding:2px 5px;border-radius:4px;"
+        style += (
+            "display:inline-block;background:#dcfae6;color:#067647;"
+            "padding:3px 7px;border-radius:6px;"
+        )
+    elif any(
+        word in plain
+        for word in ("结论", "核心", "策略", "计划", "重点", "建议", "怎么做")
+    ):
+        style += (
+            "display:inline-block;background:#dbeafe;color:#174ea6;"
+            "padding:3px 7px;border-radius:6px;"
+        )
+    elif any(
+        word in plain
+        for word in ("数据", "事实", "验证", "财报", "质量", "依据", "动态")
+    ):
+        style += (
+            "display:inline-block;background:#dcfae6;color:#067647;"
+            "padding:3px 7px;border-radius:6px;"
+        )
+    elif any(
+        word in plain
+        for word in ("观察", "等待", "关注", "中性", "持有", "观望", "明天")
+    ):
+        style += (
+            "display:inline-block;background:#fff0c2;color:#93370d;"
+            "padding:3px 7px;border-radius:6px;"
+        )
     return f'<strong style="{style}">{inner}</strong>'
+
+
+def _pushplus_section_style(match: re.Match) -> str:
+    """Colour section bars by meaning without changing report content."""
+
+    attrs = match.group("attrs") or ""
+    inner = match.group("inner")
+    plain = re.sub(r"<[^>]+>", "", inner).strip().lower()
+    background = "#174ea6"
+    border = "#7fb0ff"
+    if any(word in plain for word in ("风险", "警报", "失败", "未完成")):
+        background = "#b42318"
+        border = "#ff9b9b"
+    elif any(word in plain for word in ("数据", "可信", "术语", "看懂")):
+        background = "#9a4e00"
+        border = "#ffc46b"
+    elif any(word in plain for word in ("机会", "公司", "财报", "动态")):
+        background = "#067647"
+        border = "#75d99a"
+    elif any(word in plain for word in ("结论", "重点", "计划", "自选")):
+        background = "#4938a2"
+        border = "#a99cff"
+    style = (
+        "font-size:19px;line-height:1.4;margin:22px 0 12px;padding:11px 13px;"
+        f"color:#ffffff;background:{background};border-left:5px solid {border};"
+        "border-radius:9px;font-weight:800;box-shadow:0 3px 8px "
+        "rgba(16,24,40,0.12);"
+    )
+    return f'<h2{attrs} style="{style}">{inner}</h2>'
+
+
+def _pushplus_semantic_paragraph(match: re.Match) -> str:
+    """Turn decision, risk, and data lines into scannable slide-like callouts."""
+
+    attrs = match.group("attrs") or ""
+    inner = match.group("inner")
+    plain = re.sub(r"<[^>]+>", "", inner).strip().lower()
+    style = "font-size:16px;line-height:1.72;margin:0 0 11px;color:#344054;"
+    palette = None
+    if any(word in plain[:28] for word in ("风险", "警报", "失效", "数据缺口")):
+        palette = ("#fff1f3", "#e11d48")
+    elif any(word in plain[:28] for word in ("一句话结论", "核心结论", "你现在怎么做")):
+        palette = ("#eff6ff", "#2563eb")
+    elif any(word in plain[:28] for word in ("机会观察", "买入候选", "加仓")):
+        palette = ("#fff4ed", "#f04438")
+    elif any(word in plain[:28] for word in ("明天只盯", "观察条件", "等待")):
+        palette = ("#fffbeb", "#f59e0b")
+    elif any(word in plain[:28] for word in ("主要依据", "公司动态", "数据可信")):
+        palette = ("#ecfdf3", "#12b76a")
+    if palette:
+        style += (
+            f"padding:10px 11px;background:{palette[0]};"
+            f"border-left:4px solid {palette[1]};border-radius:7px;"
+        )
+    return f'<p{attrs} style="{style}">{inner}</p>'
+
+
+def _pushplus_glossary_html(markdown_text: str) -> str:
+    """Add a short, deterministic glossary when a mobile report uses jargon."""
+
+    source = markdown_text or ""
+    if "不懂术语就看这里" in source:
+        return ""
+    candidates = (
+        (
+            r"(?<![A-Za-z])PE(?![A-Za-z])|市盈率",
+            "市盈率（PE）",
+            "股价相对公司利润的倍数；高低要结合行业和增长看。",
+        ),
+        (
+            r"(?<![A-Za-z])PB(?![A-Za-z])|市净率",
+            "市净率（PB）",
+            "股价相对净资产的倍数；低于同行不一定代表被低估。",
+        ),
+        (
+            r"(?<![A-Za-z])RSI(?![A-Za-z])",
+            "RSI",
+            "反映短期涨跌强弱，只是超买超卖参考，不是买卖指令。",
+        ),
+        (
+            r"(?<![A-Za-z])MACD(?![A-Za-z])",
+            "MACD",
+            "观察趋势和动能变化，单独的金叉或死叉不能决定交易。",
+        ),
+        (
+            r"均线|MA\d+",
+            "均线",
+            "一段时间的平均价格，用来观察趋势和可能的支撑压力。",
+        ),
+        (
+            r"北向资金",
+            "北向资金",
+            "通过互联互通进入A股的资金流；单日流入流出不等于趋势。",
+        ),
+        (
+            r"成交额|成交量|量能",
+            "成交量/成交额",
+            "反映交易活跃度；放量要结合价格方向和所处位置判断。",
+        ),
+    )
+    matched = [
+        (label, explanation)
+        for pattern, label, explanation in candidates
+        if re.search(pattern, source, flags=re.IGNORECASE)
+    ][:4]
+    if not matched:
+        return ""
+    items = "".join(
+        (
+            '<li style="font-size:14px;line-height:1.65;margin:5px 0;">'
+            f'<strong style="color:#7a2e0e;">{label}：</strong>{explanation}</li>'
+        )
+        for label, explanation in matched
+    )
+    return (
+        '<aside style="margin:20px 0 4px;padding:12px 13px;background:#fff7d6;'
+        'border:1px solid #ffd36a;border-radius:9px;color:#5f3b12;">'
+        '<div style="font-size:16px;font-weight:800;margin-bottom:6px;">'
+        "🧭 新手术语小抄</div>"
+        f'<ul style="margin:0;padding-left:20px;">{items}</ul></aside>'
+    )
 
 
 def markdown_to_pushplus_html(markdown_text: str) -> str:
@@ -287,6 +438,7 @@ def markdown_to_pushplus_html(markdown_text: str) -> str:
     """
 
     compact_markdown = _compact_report_links(markdown_text)
+    glossary_html = _pushplus_glossary_html(compact_markdown)
     body = markdown2.markdown(
         compact_markdown,
         extras=["tables", "fenced-code-blocks", "break-on-newline", "cuddled-lists"],
@@ -295,26 +447,22 @@ def markdown_to_pushplus_html(markdown_text: str) -> str:
 
     tag_styles = {
         "h1": (
-            "font-size:23px;line-height:1.35;margin:4px 0 18px;color:#101828;"
-            "font-weight:800;letter-spacing:-0.2px;"
-        ),
-        "h2": (
-            "font-size:19px;line-height:1.45;margin:22px 0 12px;padding:10px 12px;"
-            "color:#174ea6;background:#eef4ff;border-left:4px solid #3973e6;"
-            "border-radius:6px;font-weight:750;"
+            "font-size:23px;line-height:1.35;margin:0 0 16px;padding:17px 15px;"
+            "color:#ffffff;background:#102a56;border-radius:12px;font-weight:850;"
+            "letter-spacing:-0.2px;box-shadow:0 5px 14px rgba(16,42,86,0.22);"
         ),
         "h3": (
-            "font-size:17px;line-height:1.5;margin:18px 0 9px;padding:9px 10px;"
-            "color:#24324a;background:#f8fafc;border-left:3px solid #98a2b3;"
-            "border-radius:5px;font-weight:750;"
+            "font-size:18px;line-height:1.45;margin:0 0 11px;padding:10px 11px;"
+            "color:#172033;background:#eef2ff;border-left:4px solid #6366f1;"
+            "border-radius:7px;font-weight:800;"
         ),
-        "p": "font-size:16px;line-height:1.82;margin:0 0 13px;color:#344054;",
         "ul": "margin:7px 0 14px;padding-left:22px;color:#344054;",
         "ol": "margin:7px 0 14px;padding-left:24px;color:#344054;",
-        "li": "font-size:16px;line-height:1.75;margin:5px 0;padding-left:2px;",
+        "li": "font-size:16px;line-height:1.68;margin:6px 0;padding-left:2px;",
         "blockquote": (
-            "margin:12px 0 16px;padding:12px 14px;background:#fffaeb;"
-            "border-left:4px solid #f5a524;border-radius:6px;color:#7a4b00;"
+            "margin:12px 0 16px;padding:13px 14px;background:#fff7d6;"
+            "border:1px solid #ffd36a;border-left:5px solid #f59e0b;"
+            "border-radius:9px;color:#713b12;font-weight:650;"
         ),
         "hr": "border:0;border-top:1px solid #e4e7ec;margin:22px 0;",
         "table": (
@@ -355,8 +503,30 @@ def markdown_to_pushplus_html(markdown_text: str) -> str:
         )
 
     body = re.sub(
+        r"<h2(?P<attrs>\s[^>]*)?>(?P<inner>.*?)</h2>",
+        _pushplus_section_style,
+        body,
+        flags=re.DOTALL,
+    )
+    body = re.sub(
+        r"<p(?P<attrs>\s[^>]*)?>(?P<inner>.*?)</p>",
+        _pushplus_semantic_paragraph,
+        body,
+        flags=re.DOTALL,
+    )
+    body = re.sub(
         r"<strong>(.*?)</strong>",
         _pushplus_highlight_strong,
+        body,
+        flags=re.DOTALL,
+    )
+    body = re.sub(
+        r"(<h3\b.*?</h3>)(.*?)(?=<h[23]\b|$)",
+        (
+            '<section style="box-sizing:border-box;margin:12px 0 16px;padding:12px;'
+            'background:#ffffff;border:1px solid #dfe3eb;border-radius:11px;'
+            'box-shadow:0 3px 10px rgba(16,24,40,0.08);">\\1\\2</section>'
+        ),
         body,
         flags=re.DOTALL,
     )
@@ -371,14 +541,14 @@ def markdown_to_pushplus_html(markdown_text: str) -> str:
     )
 
     return (
-        '<div style="margin:0;background:#f3f5f8;padding:10px 0;">'
+        '<div style="margin:0;background:#eef1f6;padding:10px 0;">'
         '<article style="box-sizing:border-box;max-width:760px;margin:0 auto;'
-        'padding:18px 16px 26px;background:#ffffff;color:#344054;border-radius:10px;'
-        'box-shadow:0 2px 10px rgba(16,24,40,0.06);'
+        'padding:14px 12px 24px;background:#f8f9fc;color:#344054;border-radius:12px;'
+        'box-shadow:0 3px 14px rgba(16,24,40,0.08);'
         'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,'
         'Helvetica Neue,Arial,PingFang SC,Hiragino Sans GB,Microsoft YaHei,sans-serif;'
         'word-break:break-word;-webkit-text-size-adjust:100%;">'
-        f"{body}"
+        f"{body}{glossary_html}"
         '<div style="margin-top:24px;padding-top:12px;border-top:1px solid #e4e7ec;'
         'font-size:12px;line-height:1.6;color:#98a2b3;">'
         "数据与结论均应结合交易所公告及最新行情复核；数据不足时以风险控制优先。"

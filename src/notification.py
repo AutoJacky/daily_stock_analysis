@@ -1880,18 +1880,20 @@ class NotificationService(
         requested_codes = list(requested_codes or [])
         failed_items = list(failed_items or [])
 
-        def _limitations(result: AnalysisResult) -> List[str]:
+        def _phase_decision(result: AnalysisResult) -> Dict[str, Any]:
             dashboard = (
                 result.dashboard
                 if isinstance(getattr(result, "dashboard", None), dict)
                 else {}
             )
-            phase_decision = (
+            return (
                 dashboard.get("phase_decision")
                 if isinstance(dashboard.get("phase_decision"), dict)
                 else {}
             )
-            values = phase_decision.get("data_limitations")
+
+        def _limitations(result: AnalysisResult) -> List[str]:
+            values = _phase_decision(result).get("data_limitations")
             return [
                 str(item).strip()
                 for item in (values if isinstance(values, list) else [])
@@ -1945,6 +1947,41 @@ class NotificationService(
                     )
             return ""
 
+        def _short(value: Any, limit: int) -> str:
+            text = " ".join(str(value or "").split())
+            return text[:limit] + ("…" if len(text) > limit else "")
+
+        def _stock_names(items: List[AnalysisResult], limit: int = 3) -> str:
+            names = [
+                self._get_display_name(item, report_language)
+                for item in items[:limit]
+            ]
+            if not names:
+                return "暂无"
+            suffix = f"等{len(items)}只" if len(items) > limit else ""
+            return "、".join(names) + suffix
+
+        decision_groups: Dict[str, List[AnalysisResult]] = {
+            "buy": [],
+            "hold": [],
+            "sell": [],
+        }
+        for result in results:
+            bucket = display_decision_type_for_result(
+                result,
+                report_language=report_language,
+            )
+            decision_groups[bucket if bucket in decision_groups else "hold"].append(
+                result
+            )
+        for values in decision_groups.values():
+            values.sort(
+                key=lambda item: int(
+                    getattr(item, "sentiment_score", 0) or 0
+                ),
+                reverse=True,
+            )
+
         risk_focus = sorted(results, key=_risk_rank)
         opportunity_focus = sorted(
             results,
@@ -1955,7 +1992,7 @@ class NotificationService(
         for candidate in risk_focus[:3] + opportunity_focus:
             if candidate not in focus:
                 focus.append(candidate)
-            if len(focus) >= min(5, len(results)):
+            if len(focus) >= min(4, len(results)):
                 break
 
         buy_count, sell_count, hold_count = self._count_display_decisions(
@@ -1964,28 +2001,60 @@ class NotificationService(
         )
         requested_count = len(requested_codes) or len(results) + len(failed_items)
         lines = [
-            f"# 📈 自选股决策摘要 · {report_date}",
+            f"# 📊 每日投资决策卡 · {report_date}",
+            "",
+            "## ⏱ 一分钟看懂",
             "",
             (
-                f"> 本轮请求 {requested_count} 只｜成功 {len(results)}｜"
-                f"失败 {len(failed_items)}｜买入候选 {buy_count}｜"
-                f"观察 {hold_count}｜防守 {sell_count}"
+                f"> 共看了 {requested_count} 只股票：成功 {len(results)} 只，"
+                f"失败 {len(failed_items)} 只。机会观察 {buy_count} 只，"
+                f"等待确认 {hold_count} 只，优先防守 {sell_count} 只。"
             ),
             "",
-            "> 阅读顺序：先看红色风险与失效条件，再看蓝色结论；数据缺失项不作为交易依据。",
+            f"**🔴 先控制风险：** {_stock_names(decision_groups['sell'])}",
+            "",
+            f"**✨ 机会观察：** {_stock_names(decision_groups['buy'])}",
+            "",
+            f"**🟠 暂时等待：** {_stock_names(decision_groups['hold'])}",
+            "",
+            "> 阅读顺序：先看红色风险，再看“你现在怎么做”和“明天只盯”。"
+            "数据缺失的股票不能作为交易依据。",
         ]
         if focus:
-            lines.extend(["", "## 今晚优先核对", ""])
+            lines.extend(
+                ["", f"## 🎯 最重要的{len(focus)}张卡", ""]
+            )
         for result in focus:
             signal_text, signal_emoji, _ = self._get_signal_level(result)
             stock_name = self._get_display_name(result, report_language)
             confidence = getattr(result, "confidence_level", None) or "N/A"
             score = int(getattr(result, "sentiment_score", 0) or 0)
+            phase_decision = _phase_decision(result)
+            immediate_action = _short(
+                phase_decision.get("immediate_action")
+                or getattr(result, "operation_advice", None)
+                or signal_text,
+                70,
+            )
+            raw_watch_conditions = phase_decision.get("watch_conditions")
+            watch_conditions = [
+                _short(item, 60)
+                for item in (
+                    raw_watch_conditions
+                    if isinstance(raw_watch_conditions, list)
+                    else []
+                )
+                if _short(item, 60)
+            ]
             lines.extend(
                 [
                     f"### {signal_emoji} {stock_name}（{result.code}）",
                     "",
-                    f"**核心结论：** {signal_text}｜评分 {score}｜置信度 {confidence}",
+                    (
+                        f"**一句话结论：** {signal_text}｜综合分 {score}/100"
+                        f"｜证据置信度 {confidence}"
+                    ),
+                    f"**你现在怎么做：** {immediate_action}",
                 ]
             )
             reason = str(
@@ -1994,15 +2063,33 @@ class NotificationService(
                 or ""
             ).strip()
             if reason:
-                lines.append(f"**决策依据：** {reason[:100]}{'…' if len(reason) > 100 else ''}")
+                lines.append(f"**主要依据：** {_short(reason, 105)}")
+            if watch_conditions:
+                lines.append(
+                    f"**明天只盯：** {'；'.join(watch_conditions[:2])}"
+                )
+            else:
+                key_points = _short(
+                    getattr(result, "key_points", None),
+                    95,
+                )
+                lines.append(
+                    f"**明天只盯：** "
+                    f"{key_points or '等待新的价格、成交量或公告证据'}"
+                )
             risk = str(getattr(result, "risk_warning", None) or "").strip()
             if risk:
-                lines.append(f"**风险警报：** {risk[:100]}{'…' if len(risk) > 100 else ''}")
+                lines.append(f"**风险或结论失效：** {_short(risk, 105)}")
             limitations = _limitations(result)
             if limitations:
                 data_gap = "；".join(limitations[:2])
                 lines.append(
-                    f"**数据缺口：** {data_gap[:110]}{'…' if len(data_gap) > 110 else ''}"
+                    f"**数据可信度：** 有缺口——{_short(data_gap, 95)}"
+                )
+            else:
+                lines.append(
+                    "**数据可信度：** 本轮未记录结构化缺口；"
+                    "仍需核对交易所公告与最新价格"
                 )
             verified_event = _latest_verified_event(result)
             if verified_event:
@@ -2027,26 +2114,42 @@ class NotificationService(
                 lines.append(f"- 🔴 **{normalized_code}**｜数据或模型链路失败，等待下轮重试")
             lines.append("")
 
-        lines.extend(["## 全部成功股票速览", ""])
-        for result in sorted(
-            results,
-            key=lambda item: int(getattr(item, "sentiment_score", 0) or 0),
-            reverse=True,
-        ):
-            signal_text, signal_emoji, _ = self._get_signal_level(result)
-            stock_name = self._get_display_name(result, report_language)
-            confidence = getattr(result, "confidence_level", None) or "N/A"
-            gap_marker = "｜🟠 数据不足" if _limitations(result) else ""
-            lines.append(
-                f"- {signal_emoji} **{stock_name}（{result.code}）**｜{signal_text}｜"
-                f"{int(getattr(result, 'sentiment_score', 0) or 0)} 分｜"
-                f"置信度 {confidence}{gap_marker}"
-            )
+        lines.extend(["## 🧾 全部自选，一眼分组", ""])
+        group_meta = (
+            ("sell", "🔴 先控风险"),
+            ("buy", "✨ 机会观察"),
+            ("hold", "🟠 等待确认"),
+        )
+        for key, heading in group_meta:
+            grouped_results = decision_groups[key]
+            if not grouped_results:
+                continue
+            lines.extend([f"### {heading}（{len(grouped_results)}只）", ""])
+            for result in grouped_results:
+                signal_text, signal_emoji, _ = self._get_signal_level(result)
+                stock_name = self._get_display_name(result, report_language)
+                confidence = getattr(result, "confidence_level", None) or "N/A"
+                gap_marker = "｜⚠️ 数据不足" if _limitations(result) else ""
+                lines.append(
+                    f"- {signal_emoji} **{stock_name}（{result.code}）**｜"
+                    f"{signal_text}｜"
+                    f"{int(getattr(result, 'sentiment_score', 0) or 0)}分"
+                    f"｜证据 {confidence}{gap_marker}"
+                )
 
         lines.extend(
             [
                 "",
-                "> 完整深度版（财报、公告、技术结构与证据链）继续保存在本次云端运行附件中。",
+                "## 🧭 不懂术语就看这里",
+                "",
+                "- **综合分：** 只用于同批股票排序，不是上涨概率。",
+                "- **证据置信度：** 表示数据和证据是否充分，不是预测胜率。",
+                "- **机会观察：** 可以重点跟踪，不等于立刻买入。",
+                "- **等待确认：** 条件没有满足前不行动，避免追涨杀跌。",
+                "- **优先防守：** 先检查仓位和风险，不代表股价一定下跌。",
+                "",
+                "> 手机版负责快速决策；完整深度版继续保留财报、公告、"
+                "技术结构和证据链，不因简化展示而删掉研究依据。",
             ]
         )
 

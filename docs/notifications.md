@@ -58,6 +58,8 @@ PushPlus 是本节的明确例外：
 - 发送器在同一个通知服务实例内共享五次/分钟滚动窗口；长报告的后续分页或紧随其后的消息会等待额度释放。只有 HTTP 429 或明确的频率/限流响应会等待窗口后重试一次。
 - PushPlus 接口采用异步投递：同步 `code=200` 只表示请求已受理，日志不会再把它表述为微信已最终送达。若需要程序自动核对最终投递状态，还需另行配置 PushPlus 开放接口 AccessKey 或可接收回调的公网地址。
 - 每日模型复核在启用 `ADAPTIVE_LEARNING_ENABLED` 时会追加“自主治理状态”：展示客观样本对应的自动限制系数和影子候选；影子候选只参与后续模拟验证，真实下单始终关闭。
+- 自选股手机摘要采用 PPT 卡片式信息层级：开头先给“一分钟看懂”，再展示最多四张重点股票卡，按“先控风险 / 机会观察 / 等待确认”列出全部自选。每张重点卡固定解释一句话结论、当前动作、明日观察、结论失效条件和数据可信度；综合分只用于同批排序，证据置信度不等于上涨概率或预测胜率。
+- PushPlus HTML 使用高对比语义色块：红色表示风险或失效，蓝色表示结论和动作，黄色表示等待或观察，绿色表示事实、依据和数据。大盘及个股正文出现 PE、PB、RSI、MACD、均线、北向资金或量能等术语时，手机页会自动附最多四条通俗解释；只增加解释，不改写原始数值和结论。
 
 兼容性排除说明：
 - 本轮未改动 `src/notification_sender/wechat_sender.py`、`src/notification_sender/slack_sender.py`、`src/notification_sender/telegram_sender.py` 的发送路径；`src/notification_sender/feishu_sender.py` 新增 `send_feishu_file()` 文件发送路径，Webhook 模式回退为发送文件内容文本，App Bot 文字发送路径（`send_to_feishu` → `_send_via_app_bot`）保持不变。
