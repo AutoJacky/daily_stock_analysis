@@ -16,7 +16,7 @@ YfinanceFetcher - 兜底数据源 (Priority 4)
 
 import csv
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import StringIO
 from typing import Optional, List, Dict, Any
 from urllib.error import HTTPError, URLError
@@ -75,6 +75,31 @@ class YfinanceFetcher(BaseFetcher):
 
     name = "YfinanceFetcher"
     priority = int(os.getenv("YFINANCE_PRIORITY", "4"))
+
+    _US_MARKET_PROXIES = {
+        "SPY": "标普500 ETF",
+        "RSP": "标普500等权 ETF",
+        "IWM": "罗素2000 ETF",
+        "QQQ": "纳斯达克100 ETF",
+    }
+    _US_SECTOR_ETFS = {
+        "XLK": "信息技术",
+        "XLC": "通信服务",
+        "XLY": "可选消费",
+        "XLP": "必需消费",
+        "XLE": "能源",
+        "XLF": "金融",
+        "XLV": "医疗保健",
+        "XLI": "工业",
+        "XLB": "原材料",
+        "XLRE": "房地产",
+        "XLU": "公用事业",
+    }
+    _US_FRED_SERIES = {
+        "DGS2": ("美国2年期国债收益率", "%"),
+        "DGS10": ("美国10年期国债收益率", "%"),
+        "DTWEXBGS": ("美联储广义美元指数", "index"),
+    }
 
     def __init__(self):
         """初始化 YfinanceFetcher"""
@@ -336,6 +361,7 @@ class YfinanceFetcher(BaseFetcher):
             'volume': float(today_row['Volume']),
             'amount': 0.0,  # Yahoo Finance 不提供准确成交额
             'amplitude': amplitude,
+            'trade_date': pd.Timestamp(hist.index[-1]).date().isoformat(),
         }
 
     def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
@@ -389,9 +415,9 @@ class YfinanceFetcher(BaseFetcher):
         return None
 
     def _get_us_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
-        """获取美股主要指数行情（SPX、IXIC、DJI、VIX），复用 _fetch_yf_ticker_data"""
+        """获取美股主要指数行情，覆盖大盘、科技、小盘与波动率。"""
         # 大盘复盘所需核心美股指数
-        us_indices = ['SPX', 'IXIC', 'DJI', 'VIX']
+        us_indices = ['SPX', 'IXIC', 'NDX', 'DJI', 'RUT', 'VIX']
         results = []
         try:
             for code in us_indices:
@@ -414,6 +440,267 @@ class YfinanceFetcher(BaseFetcher):
             logger.error(f"[Yfinance] 获取美股指数行情失败: {e}")
 
         return None
+
+    @staticmethod
+    def _extract_yf_symbol_frame(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """Extract one symbol from a grouped yfinance batch response."""
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+        if not isinstance(raw.columns, pd.MultiIndex):
+            return raw.copy()
+        level0 = raw.columns.get_level_values(0)
+        level1 = raw.columns.get_level_values(1)
+        if symbol in level0:
+            return raw[symbol].copy()
+        if symbol in level1:
+            return raw.xs(symbol, axis=1, level=1).copy()
+        return pd.DataFrame()
+
+    @staticmethod
+    def _build_us_price_metric(frame: pd.DataFrame, *, symbol: str, name: str) -> Optional[Dict[str, Any]]:
+        """Normalize a verified daily ETF series into the US context contract."""
+        if frame is None or frame.empty or "Close" not in frame.columns:
+            return None
+        normalized = frame.copy()
+        normalized["Close"] = pd.to_numeric(normalized["Close"], errors="coerce")
+        normalized = normalized.dropna(subset=["Close"])
+        if len(normalized) < 2:
+            return None
+        latest = normalized.iloc[-1]
+        previous = normalized.iloc[-2]
+        close = float(latest["Close"])
+        previous_close = float(previous["Close"])
+        if close <= 0 or previous_close <= 0:
+            return None
+
+        volume = None
+        average_volume_20 = None
+        volume_ratio_20d = None
+        if "Volume" in normalized.columns:
+            volumes = pd.to_numeric(normalized["Volume"], errors="coerce")
+            latest_volume = volumes.iloc[-1]
+            history_volume = volumes.iloc[:-1].dropna().tail(20)
+            if pd.notna(latest_volume) and float(latest_volume) >= 0:
+                volume = float(latest_volume)
+            if not history_volume.empty and float(history_volume.mean()) > 0:
+                average_volume_20 = float(history_volume.mean())
+                if volume is not None:
+                    volume_ratio_20d = volume / average_volume_20
+
+        return {
+            "symbol": symbol,
+            "name": name,
+            "last": close,
+            "previous_close": previous_close,
+            "change_pct": (close / previous_close - 1.0) * 100.0,
+            "volume": volume,
+            "average_volume_20": average_volume_20,
+            "volume_ratio_20d": volume_ratio_20d,
+            "as_of": pd.Timestamp(normalized.index[-1]).date().isoformat(),
+            "source": "Yahoo Finance/yfinance",
+        }
+
+    def _fetch_us_etf_metrics(self, yf) -> Dict[str, Dict[str, Any]]:
+        symbols = list(self._US_MARKET_PROXIES) + list(self._US_SECTOR_ETFS)
+        raw = yf.download(
+            symbols,
+            period="1mo",
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=False,
+            progress=False,
+            threads=True,
+        )
+        metrics: Dict[str, Dict[str, Any]] = {}
+        names = {**self._US_MARKET_PROXIES, **self._US_SECTOR_ETFS}
+        for symbol in symbols:
+            metric = self._build_us_price_metric(
+                self._extract_yf_symbol_frame(raw, symbol),
+                symbol=symbol,
+                name=names[symbol],
+            )
+            if metric:
+                metrics[symbol] = metric
+        return metrics
+
+    @classmethod
+    def _fetch_fred_metric(cls, series_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch recent official FRED observations without requiring an API key."""
+        name, unit = cls._US_FRED_SERIES[series_id]
+        start_date = (datetime.utcnow() - timedelta(days=21)).date().isoformat()
+        url = (
+            "https://fred.stlouisfed.org/graph/fredgraph.csv"
+            f"?id={series_id}&cosd={start_date}"
+        )
+        request = Request(
+            url,
+            headers={"User-Agent": "daily-stock-analysis/market-review"},
+        )
+        with urlopen(request, timeout=8) as response:
+            payload = response.read().decode("utf-8")
+        rows = []
+        for row in csv.DictReader(StringIO(payload)):
+            raw_value = str(row.get(series_id) or "").strip()
+            if not raw_value or raw_value == ".":
+                continue
+            try:
+                value = float(raw_value)
+            except ValueError:
+                continue
+            observation_date = str(
+                row.get("observation_date")
+                or row.get("DATE")
+                or ""
+            ).strip()
+            if not observation_date:
+                continue
+            rows.append((observation_date, value))
+        if len(rows) < 2:
+            return None
+        latest_date, latest_value = rows[-1]
+        previous_date, previous_value = rows[-2]
+        return {
+            "series_id": series_id,
+            "name": name,
+            "value": latest_value,
+            "previous_value": previous_value,
+            "change": latest_value - previous_value,
+            "unit": unit,
+            "as_of": latest_date,
+            "previous_as_of": previous_date,
+            "source": "Federal Reserve Bank of St. Louis (FRED)",
+            "url": f"https://fred.stlouisfed.org/series/{series_id}",
+        }
+
+    def get_us_market_context(self) -> Optional[Dict[str, Any]]:
+        """Build strict US participation, sector, liquidity, and macro context."""
+        import yfinance as yf
+
+        metrics: Dict[str, Dict[str, Any]] = {}
+        try:
+            metrics = self._fetch_us_etf_metrics(yf)
+        except Exception as exc:
+            logger.warning("[Yfinance] 美股ETF批量行情失败: %s", exc)
+
+        proxies = {
+            symbol: metrics[symbol]
+            for symbol in self._US_MARKET_PROXIES
+            if symbol in metrics
+        }
+        sector_metrics = [
+            metrics[symbol]
+            for symbol in self._US_SECTOR_ETFS
+            if symbol in metrics
+        ]
+        sector_metrics.sort(key=lambda item: float(item["change_pct"]), reverse=True)
+
+        macro: Dict[str, Dict[str, Any]] = {}
+        for series_id in self._US_FRED_SERIES:
+            try:
+                metric = self._fetch_fred_metric(series_id)
+            except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+                logger.warning("[FRED] 获取 %s 失败: %s", series_id, exc)
+                metric = None
+            if metric:
+                macro[series_id] = metric
+
+        proxy_dates = {item["as_of"] for item in proxies.values()}
+        latest_proxy_date = max(proxy_dates) if proxy_dates else ""
+        aligned_proxies = {
+            symbol: item
+            for symbol, item in proxies.items()
+            if item["as_of"] == latest_proxy_date
+        }
+        aligned_sector_metrics = [
+            item for item in sector_metrics if item["as_of"] == latest_proxy_date
+        ]
+        sector_advancers = sum(float(item["change_pct"]) > 0 for item in aligned_sector_metrics)
+        sector_decliners = sum(float(item["change_pct"]) < 0 for item in aligned_sector_metrics)
+        sector_flat = len(aligned_sector_metrics) - sector_advancers - sector_decliners
+
+        spy = aligned_proxies.get("SPY")
+        rsp = aligned_proxies.get("RSP")
+        iwm = aligned_proxies.get("IWM")
+        qqq = aligned_proxies.get("QQQ")
+        participation = {
+            "equal_weight_vs_cap_weight_pct": (
+                float(rsp["change_pct"]) - float(spy["change_pct"])
+                if rsp and spy else None
+            ),
+            "small_cap_vs_large_cap_pct": (
+                float(iwm["change_pct"]) - float(spy["change_pct"])
+                if iwm and spy else None
+            ),
+            "nasdaq100_vs_large_cap_pct": (
+                float(qqq["change_pct"]) - float(spy["change_pct"])
+                if qqq and spy else None
+            ),
+            "sector_advancers": sector_advancers,
+            "sector_decliners": sector_decliners,
+            "sector_flat": sector_flat,
+            "sector_coverage": len(aligned_sector_metrics),
+            "spy_volume_ratio_20d": spy.get("volume_ratio_20d") if spy else None,
+            "as_of": latest_proxy_date,
+            "method": (
+                "SPY/RSP/IWM/QQQ relative performance plus 11 S&P sector ETFs; "
+                "this is a transparent participation proxy, not exchange advance/decline counts."
+            ),
+        }
+
+        proxy_ok = len(aligned_proxies) == len(self._US_MARKET_PROXIES)
+        sector_ok = len(aligned_sector_metrics) >= 8
+        macro_ok = "DGS2" in macro and "DGS10" in macro
+        liquidity_ok = bool(
+            spy
+            and spy.get("volume_ratio_20d") is not None
+            and float(spy["volume_ratio_20d"]) > 0
+        )
+        missing = []
+        if not proxy_ok:
+            missing.append("participation_proxies")
+        if not liquidity_ok:
+            missing.append("liquidity_proxy")
+        if not sector_ok:
+            missing.append("sector_etf_coverage")
+        if not macro_ok:
+            missing.append("treasury_yields")
+
+        return {
+            "as_of": latest_proxy_date,
+            "proxies": aligned_proxies,
+            "participation": participation,
+            "sector_rankings": {
+                "top": aligned_sector_metrics[:5],
+                "bottom": list(reversed(aligned_sector_metrics[-5:])),
+                "coverage": len(aligned_sector_metrics),
+                "universe": len(self._US_SECTOR_ETFS),
+            },
+            "macro": macro,
+            "quality": {
+                "status": "ok" if not missing else "unavailable",
+                "core_ready": not missing,
+                "proxy_ready": proxy_ok,
+                "liquidity_ready": liquidity_ok,
+                "sector_ready": sector_ok,
+                "macro_ready": macro_ok,
+                "missing_core_fields": missing,
+            },
+            "sources": [
+                {
+                    "name": "Yahoo Finance/yfinance",
+                    "scope": "ETF closes, volume, and sector rotation",
+                    "as_of": latest_proxy_date,
+                },
+                {
+                    "name": "Federal Reserve Bank of St. Louis (FRED)",
+                    "scope": "DGS2, DGS10, DTWEXBGS",
+                    "as_of": max(
+                        (str(item.get("as_of") or "") for item in macro.values()),
+                        default="",
+                    ),
+                },
+            ],
+        }
 
     def _get_hk_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
         """获取港股主要指数行情（HSI、HSTECH、HSCEI），复用 _fetch_yf_ticker_data"""

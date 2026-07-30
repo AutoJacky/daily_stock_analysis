@@ -364,9 +364,18 @@ def run_market_review(
                 )
             elif send_notification and notifier.is_available():
                 # 添加标题
+                push_title = review_text["push_title"]
+                if persist_region == "us":
+                    language = normalize_report_language(
+                        getattr(runtime_config, "report_language", "zh")
+                    )
+                    push_title = {
+                        "en": "🎯 US Market Recap",
+                        "ko": "🎯 미국 시황 리뷰",
+                    }.get(language, "🎯 美股大盘复盘")
                 report_content = _render_market_review_payload_markdown(
                     market_review_payload,
-                    wrapper_title=review_text["push_title"],
+                    wrapper_title=push_title,
                 )
 
                 notification_attempted = True

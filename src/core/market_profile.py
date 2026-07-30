@@ -44,13 +44,20 @@ US_PROFILE = MarketProfile(
     region="us",
     mood_index_code="SPX",
     news_queries=[
-        "美股 大盘",
-        "US stock market",
-        "S&P 500 NASDAQ",
+        "美股 收盘 标普500 纳斯达克 道琼斯 罗素2000 最新",
+        "Federal Reserve Treasury yields inflation jobs GDP US stocks latest",
+        "S&P 500 earnings results guidance latest",
+        "US regulation tariffs geopolitics fiscal policy stock market latest",
+        "S&P 500 sectors rotation technology financials energy defensives latest",
     ],
-    prompt_index_hint="分析标普500、纳斯达克、道指等各指数走势特点",
-    has_market_stats=False,
-    has_sector_rankings=False,
+    prompt_index_hint=(
+        "分析标普500、纳斯达克、道指、罗素2000与VIX的联动，"
+        "并核对等权/市值加权、大小盘相对强弱"
+    ),
+    # 美股使用 SPY/RSP/IWM/QQQ、行业 ETF 和宏观利率构成与 A 股
+    # 涨跌家数/成交额相同用途的严格等价指标；不伪造涨跌停或北向资金。
+    has_market_stats=True,
+    has_sector_rankings=True,
 )
 
 HK_PROFILE = MarketProfile(

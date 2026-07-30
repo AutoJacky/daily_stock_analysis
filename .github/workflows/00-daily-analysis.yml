@@ -1,9 +1,11 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每个交易日北京时间 15:10 (UTC 07:10)
+  # A股：北京时间 15:10；美股：21:15 UTC（冬令时收盘后15分钟，
+  # 夏令时收盘后75分钟，优先保证完整收盘数据）。
   schedule:
     - cron: '10 7 * * 1-5'
+    - cron: '15 21 * * 1-5'
   
   # 手动触发
   workflow_dispatch:
@@ -403,6 +405,7 @@ jobs:
           STOCK_LIST_CONFIG: ${{ github.event.inputs.stock_list || vars.STOCK_LIST || secrets.STOCK_LIST }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
           MARKET_REVIEW_COLOR_SCHEME: ${{ vars.MARKET_REVIEW_COLOR_SCHEME || secrets.MARKET_REVIEW_COLOR_SCHEME || 'green_up' }}
+          SCHEDULE_EXPRESSION: ${{ github.event.schedule }}
           
           # ==========================================
           # 运行配置 ⬅️ 新增！
@@ -461,6 +464,15 @@ jobs:
 
           # 判断运行模式
           MODE="${{ github.event.inputs.mode || 'full' }}"
+          if [ "${SCHEDULE_EXPRESSION:-}" = "10 7 * * 1-5" ]; then
+            # A股收盘任务：运行自选股与A股复盘，避免重复推送上一交易日美股报告。
+            MODE="full"
+            export MARKET_REVIEW_REGION="cn"
+          elif [ "${SCHEDULE_EXPRESSION:-}" = "15 21 * * 1-5" ]; then
+            # 美股收盘任务：仅运行美股大盘复盘，不重复分析34只自选股。
+            MODE="market-only"
+            export MARKET_REVIEW_REGION="us"
+          fi
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"

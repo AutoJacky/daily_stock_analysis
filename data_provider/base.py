@@ -401,6 +401,10 @@ class BaseFetcher(ABC):
         """
         return None
 
+    def get_us_market_context(self) -> Optional[Dict[str, Any]]:
+        """Return strict US breadth proxies, sector rotation, and macro context."""
+        return None
+
     def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
         """
         获取板块涨跌榜
@@ -2481,6 +2485,30 @@ class DataFetcherManager:
                 logger.warning(f"[{fetcher.name}] 获取指数行情失败: {e}")
                 continue
         return []
+
+    def get_us_market_context(self) -> Dict[str, Any]:
+        """Get US-market internals from a provider that exposes the full contract.
+
+        This path is deliberately separate from A-share ``get_market_stats``:
+        US reports use transparent ETF participation proxies and official FRED
+        macro series instead of inventing A-share-style limit statistics.
+        """
+        preferred = sorted(
+            self._get_fetchers_snapshot(),
+            key=lambda fetcher: 0 if fetcher.name == "YfinanceFetcher" else 1,
+        )
+        for fetcher in preferred:
+            method = getattr(fetcher, "get_us_market_context", None)
+            if not callable(method):
+                continue
+            try:
+                data = self._call_fetcher_method(fetcher, "get_us_market_context")
+                if data:
+                    logger.info("[%s] 获取美股市场内部指标成功", fetcher.name)
+                    return data
+            except Exception as exc:
+                logger.warning("[%s] 获取美股市场内部指标失败: %s", fetcher.name, exc)
+        return {}
 
     def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""

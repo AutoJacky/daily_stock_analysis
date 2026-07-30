@@ -68,6 +68,7 @@ class MarketIndex:
     volume: float = 0.0          # 成交量（手）
     amount: float = 0.0          # 成交额（元）
     amplitude: float = 0.0       # 振幅(%)
+    trade_date: str = ""         # 数据对应交易日
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -82,6 +83,7 @@ class MarketIndex:
             'volume': self.volume,
             'amount': self.amount,
             'amplitude': self.amplitude,
+            'trade_date': self.trade_date,
         }
 
 
@@ -107,6 +109,8 @@ class MarketOverview:
     indices_attempted: bool = False
     market_stats_attempted: bool = False
     market_stats_available: bool = False
+    us_context_attempted: bool = False
+    us_market_context: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -266,11 +270,91 @@ class MarketAnalyzer:
             for index in overview.indices
             if self._is_positive_number(index.current)
         ]
-        required_index_count = (
-            2
-            if self.region == "cn" and overview.indices_attempted
-            else 1
-        )
+        if self.region == "us":
+            core_index_dates = [
+                index.trade_date
+                for index in valid_indices
+                if index.code != "VIX" and index.trade_date
+            ]
+            latest_index_date = max(core_index_dates) if core_index_dates else ""
+            aligned_core_indices = [
+                index
+                for index in valid_indices
+                if index.code != "VIX" and index.trade_date == latest_index_date
+            ]
+            required_index_count = 3 if overview.indices_attempted else 1
+            indices_available = len(aligned_core_indices) >= required_index_count
+            us_context = overview.us_market_context or {}
+            us_quality = us_context.get("quality") or {}
+            participation = us_context.get("participation") or {}
+            sector_rankings = us_context.get("sector_rankings") or {}
+            macro = us_context.get("macro") or {}
+            context_date = str(us_context.get("as_of") or "")
+            date_aligned = bool(
+                latest_index_date
+                and context_date
+                and latest_index_date == context_date
+            )
+            breadth_available = bool(
+                us_quality.get("proxy_ready")
+                and participation.get("sector_coverage", 0) >= 8
+                and date_aligned
+            )
+            turnover_available = bool(
+                us_quality.get("liquidity_ready")
+                and self._is_positive_number(participation.get("spy_volume_ratio_20d"))
+            )
+            sector_rankings_available = bool(
+                us_quality.get("sector_ready")
+                and sector_rankings.get("top")
+                and sector_rankings.get("bottom")
+            )
+            concept_rankings_available = True
+            macro_available = bool(
+                us_quality.get("macro_ready")
+                and macro.get("DGS2")
+                and macro.get("DGS10")
+            )
+
+            missing_core_fields: List[str] = []
+            if overview.indices_attempted and not indices_available:
+                missing_core_fields.append("major_indices")
+            if overview.us_context_attempted and not date_aligned:
+                missing_core_fields.append("us_trade_date_alignment")
+            if overview.us_context_attempted and not breadth_available:
+                missing_core_fields.append("us_participation_proxies")
+            if overview.us_context_attempted and not turnover_available:
+                missing_core_fields.append("us_liquidity_proxy")
+            if overview.us_context_attempted and not sector_rankings_available:
+                missing_core_fields.append("us_sector_etfs")
+            if overview.us_context_attempted and not macro_available:
+                missing_core_fields.append("us_treasury_yields")
+
+            missing_optional_fields: List[str] = []
+            if "DTWEXBGS" not in macro:
+                missing_optional_fields.append("us_dollar_index")
+
+            core_data_ready = not missing_core_fields
+            return {
+                "status": (
+                    "unavailable"
+                    if not core_data_ready
+                    else ("partial" if missing_optional_fields else "ok")
+                ),
+                "core_data_ready": core_data_ready,
+                "indices_available": indices_available,
+                "valid_index_count": len(aligned_core_indices),
+                "breadth_available": breadth_available,
+                "turnover_available": turnover_available,
+                "sector_rankings_available": sector_rankings_available,
+                "concept_rankings_available": concept_rankings_available,
+                "macro_available": macro_available,
+                "trade_date_aligned": date_aligned,
+                "missing_core_fields": missing_core_fields,
+                "missing_optional_fields": missing_optional_fields,
+            }
+
+        required_index_count = 2 if self.region == "cn" and overview.indices_attempted else 1
         indices_available = len(valid_indices) >= required_index_count
 
         breadth_total = (
@@ -462,23 +546,28 @@ Focus on KOSPI, KOSDAQ, semiconductor heavyweights, and global technology risk a
 - Neutral: index or heavyweight divergence; keep sizing controlled and wait for confirmation.
 - Risk-off: technology heavyweights weaken or external risk rises; prioritize drawdown control."""
         if self.region == "us" and self._get_review_language() == "zh":
-            return """## 美股市场三段式复盘策略
-聚焦指数趋势、宏观叙事与板块轮动，给出次日风控与仓位框架。
+            return """## 美股市场严格多因子复盘策略
+采用与A股复盘相同的“行情事实→结构验证→催化核验→次日计划”链路，但指标按美股制度做等价映射。
 
 ### 策略原则
-- 先看标普500、纳斯达克、道琼斯是否同向，确认主线是否一致。
-- 结合宏观与流动性指标，识别风险偏好是修复还是转弱。
-- 将复盘输出映射为“进攻/均衡/防守”动作建议，并给出明确触发失效条件。
+- 只引用输入中带数值、数据日和来源的事实；新闻只能陈述标题、来源、日期及其可验证影响链。
+- 先核对标普500、纳指、道指、罗素2000与VIX，再核对等权/市值加权、大小盘和11个行业ETF。
+- 同时检查2年/10年美债、美元、联储/财政/监管/关税/地缘政治以及标普500公司财报和指引。
+- 价格与新闻矛盾时，以价格、市场宽度代理和利率定价为主，不用情绪化措辞强行解释。
+- 风险偏好只能由价格、参与度、流动性、波动率与宏观定价共同确认，不能由标题情绪单独决定。
+- 数据缺失时必须明确写“无法验证”并降低结论与仓位确定性，禁止补数。
 
 ### 分析维度
-- 趋势结构：明确市场处于上冲、震荡还是防守转向，判断是否存在关键支撑位背离。
-- 资金与情绪：区分宏观政策、货币面与波动率对权益风险的影响。
-- 主题线索：识别持续性最强的主题与板块轮动是否形成可交易主线。
+- 趋势结构：指数是否共振，科技/小盘是否背离，VIX是否确认风险方向。
+- 参与度与流动性：RSP相对SPY、IWM相对SPY、行业ETF上涨覆盖及SPY量比是否确认指数。
+- 宏观政策：短长端美债、美元以及联储/财政/监管/关税/政治事件如何改变贴现率和风险溢价。
+- 财报业绩：盈利、营收、利润率、自由现金流和管理层指引是否支持估值与行业轮动。
+- 新闻催化：只采用有来源和日期的最新信息，区分已发生事实、市场预期与未经证实观点。
 
 ### 行动框架
-- 进攻：主板块联动上行且量能/风险位同步改善。
-- 均衡：指数分化或量能未明显放大，仓位保守执行。
-- 防守：突破失守且波动率抬升时，优先减码并保留反弹可交易性。"""
+- 进攻：指数共振、参与度扩散、量能确认、VIX/利率不构成反向压力。
+- 均衡：指数上涨但等权/小盘/行业覆盖未确认，或宏观与财报信号互相抵消。
+- 防守：指数转弱、参与度收缩、VIX上升且短端利率/美元同步施压。"""
         if not (self.region == "cn" and self._get_review_language() == "en"):
             return self.strategy.to_prompt_block()
         return """## Strategy Blueprint: A-share Three-Phase Recap Strategy
@@ -575,14 +664,24 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         # 1. 获取主要指数行情（按 region 切换 A 股/美股）
         overview.indices = self._get_main_indices()
         overview.indices_attempted = True
+        if self.region == "us":
+            trade_dates = [
+                index.trade_date
+                for index in overview.indices
+                if index.code != "VIX" and index.trade_date
+            ]
+            if trade_dates:
+                overview.date = max(trade_dates)
 
-        # 2. 获取涨跌统计（A 股有，美股无等效数据）
-        if self.profile.has_market_stats:
+        # 2. 美股使用透明等价指标；A股继续使用交易所宽度统计。
+        if self.region == "us":
+            self._get_us_market_context(overview)
+        elif self.profile.has_market_stats:
             self._get_market_statistics(overview)
             self._recover_cn_total_amount_from_indices(overview)
 
-        # 3. 获取板块涨跌榜（A 股有，美股暂无）
-        if self.profile.has_sector_rankings:
+        # 3. A股板块/题材；美股板块已由 11 个 S&P 行业 ETF 填充。
+        if self.profile.has_sector_rankings and self.region != "us":
             self._get_sector_rankings(overview)
             self._get_concept_rankings(overview)
         
@@ -616,7 +715,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                         prev_close=item['prev_close'],
                         volume=item['volume'],
                         amount=item['amount'],
-                        amplitude=item['amplitude']
+                        amplitude=item['amplitude'],
+                        trade_date=str(item.get("trade_date") or ""),
                     )
                     indices.append(index)
 
@@ -633,6 +733,34 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             logger.error("[大盘] %s action=get_main_indices status=failed error=%s", self._log_context(), e)
 
         return indices
+
+    def _get_us_market_context(self, overview: MarketOverview) -> None:
+        """Fetch and attach strict US participation, sector, and macro context."""
+        overview.us_context_attempted = True
+        try:
+            logger.info("[大盘] %s action=get_us_market_context status=start", self._log_context())
+            context = self.data_manager.get_us_market_context()
+            overview.us_market_context = context or {}
+            rankings = overview.us_market_context.get("sector_rankings") or {}
+            overview.top_sectors = list(rankings.get("top") or [])
+            overview.bottom_sectors = list(rankings.get("bottom") or [])
+            quality = overview.us_market_context.get("quality") or {}
+            logger.info(
+                "[大盘] %s action=get_us_market_context status=%s as_of=%s "
+                "sector_coverage=%s missing=%s",
+                self._log_context(),
+                quality.get("status", "empty"),
+                overview.us_market_context.get("as_of", ""),
+                rankings.get("coverage", 0),
+                ",".join(quality.get("missing_core_fields") or []),
+            )
+        except Exception as exc:
+            overview.us_market_context = {}
+            logger.error(
+                "[大盘] %s action=get_us_market_context status=failed error=%s",
+                self._log_context(),
+                exc,
+            )
 
     def _get_market_statistics(self, overview: MarketOverview):
         """获取市场涨跌统计"""
@@ -784,7 +912,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 response = self.search_service.search_stock_news(
                     stock_code="market",
                     stock_name=market_name,
-                    max_results=3,
+                    max_results=2,
                     focus_keywords=query.split()
                 )
                 if response and response.results:
@@ -872,7 +1000,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 model=getattr(self.config, "litellm_model", None),
                 call_type="market_review",
             )
-            review = self.analyzer.generate_text(prompt, max_tokens=8192, temperature=0.7)
+            review = self.analyzer.generate_text(prompt, max_tokens=8192, temperature=0.2)
         except Exception as exc:
             record_llm_run(
                 success=False,
@@ -949,6 +1077,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             light = self.build_market_light_snapshot(overview)
 
         has_breadth_data = bool(
+            self.region != "us"
+            and
             self.profile.has_market_stats
             and quality["breadth_available"]
             and quality["turnover_available"]
@@ -980,6 +1110,18 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         if light is not None:
             payload["market_light"] = light
+
+        if self.region == "us" and overview.us_market_context:
+            payload["us_market_context"] = dict(overview.us_market_context)
+            payload["participation"] = dict(
+                overview.us_market_context.get("participation") or {}
+            )
+            payload["macro"] = dict(
+                overview.us_market_context.get("macro") or {}
+            )
+            payload["us_score_dimensions"] = dict(
+                self._build_us_market_light_scores(overview).get("dimensions") or {}
+            )
 
         if has_breadth_data:
             payload["breadth"] = {
@@ -1122,6 +1264,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def _build_stats_block(self, overview: MarketOverview) -> str:
         """Build market statistics block."""
+        if self.region == "us":
+            return self._build_us_stats_block(overview)
         has_stats = overview.up_count or overview.down_count or overview.total_amount
         if not has_stats:
             return ""
@@ -1156,6 +1300,127 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             f"| 涨停/跌停 | {overview.limit_up_count} / {overview.limit_down_count} | 涨跌停差 {limit_spread:+d} |",
             f"| 两市成交额 | {overview.total_amount:.0f} 亿 | {self._describe_turnover(overview.total_amount)} |",
         ]
+        return "\n".join(lines)
+
+    def _build_us_stats_block(self, overview: MarketOverview) -> str:
+        """Build a source-aware US participation, liquidity, and macro dashboard."""
+        context = overview.us_market_context or {}
+        participation = context.get("participation") or {}
+        proxies = context.get("proxies") or {}
+        macro = context.get("macro") or {}
+        if not context:
+            return ""
+
+        light = self.build_market_light_snapshot(overview)
+        if self._get_review_language() == "en":
+            lines = [
+                f"- **Market Signal**: {light['score']}/100 "
+                f"({light['temperature_label']}, {light['label']})",
+                f"- **Drivers**: {'; '.join(light['reasons'])}",
+                f"- **Guidance**: {light['guidance']}",
+                "",
+                "| Participation / liquidity proxy | Value | As of |",
+                "|---|---:|---|",
+            ]
+        else:
+            lines = [
+                f"- **盘面信号**：{light['score']}/100（{light['temperature_label']}，{light['label']}）",
+                f"- **信号依据**：{'；'.join(light['reasons'])}",
+                f"- **操作建议**：{light['guidance']}",
+                "",
+                "#### 美股宽度与流动性等价指标",
+                "| 指标 | 数值 | 数据日 |",
+                "|---|---:|---|",
+            ]
+
+        for symbol in ("SPY", "RSP", "IWM", "QQQ"):
+            item = proxies.get(symbol) or {}
+            if not item:
+                continue
+            lines.append(
+                f"| {item.get('name', symbol)} ({symbol}) | "
+                f"{self._format_signed_pct(item.get('change_pct'))} | "
+                f"{item.get('as_of', '-')} |"
+            )
+
+        relative_rows = [
+            (
+                "RSP相对SPY（等权-市值加权）",
+                participation.get("equal_weight_vs_cap_weight_pct"),
+            ),
+            (
+                "IWM相对SPY（小盘-大盘）",
+                participation.get("small_cap_vs_large_cap_pct"),
+            ),
+            (
+                "QQQ相对SPY（科技成长-大盘）",
+                participation.get("nasdaq100_vs_large_cap_pct"),
+            ),
+        ]
+        for label, value in relative_rows:
+            lines.append(
+                f"| {label} | {self._format_signed_pct(value)} | "
+                f"{participation.get('as_of', '-')} |"
+            )
+        lines.append(
+            "| 11个标普行业ETF上涨/下跌/平盘 | "
+            f"{participation.get('sector_advancers', 0)} / "
+            f"{participation.get('sector_decliners', 0)} / "
+            f"{participation.get('sector_flat', 0)} | "
+            f"{participation.get('as_of', '-')} |"
+        )
+        volume_ratio = participation.get("spy_volume_ratio_20d")
+        volume_text = (
+            f"{float(volume_ratio):.2f}x"
+            if volume_ratio is not None
+            else "N/A"
+        )
+        lines.append(
+            f"| SPY成交量/前20日均量 | {volume_text} | "
+            f"{participation.get('as_of', '-')} |"
+        )
+
+        if macro:
+            lines.extend(
+                [
+                    "",
+                    "#### 宏观定价锚（官方 FRED）"
+                    if self._get_review_language() != "en"
+                    else "#### Macro Pricing Anchors (official FRED)",
+                    "| 指标 | 最新 | 日变化 | 数据日 |",
+                    "|---|---:|---:|---|",
+                ]
+            )
+            for series_id in ("DGS2", "DGS10", "DTWEXBGS"):
+                item = macro.get(series_id) or {}
+                if not item:
+                    continue
+                unit = str(item.get("unit") or "")
+                value = float(item.get("value") or 0.0)
+                change = float(item.get("change") or 0.0)
+                if unit == "%":
+                    value_text = f"{value:.2f}%"
+                    change_text = f"{change * 100:+.1f}bp"
+                else:
+                    value_text = f"{value:.2f}"
+                    change_text = f"{change:+.2f}"
+                lines.append(
+                    f"| {item.get('name', series_id)} | {value_text} | "
+                    f"{change_text} | {item.get('as_of', '-')} |"
+                )
+
+        note = (
+            "> 口径说明：美股没有A股式涨跌停和北向资金。这里用SPY/RSP/IWM/QQQ相对表现、"
+            "11个标普行业ETF和SPY量比衡量参与度与流动性；所有字段都保留来源和数据日，"
+            "不得表述为交易所涨跌家数。"
+        )
+        if self._get_review_language() == "en":
+            note = (
+                "> Method: participation is measured with transparent SPY/RSP/IWM/QQQ "
+                "relative-performance proxies, 11 S&P sector ETFs, and SPY volume ratio. "
+                "These are not exchange advance/decline counts."
+            )
+        lines.extend(["", note])
         return "\n".join(lines)
 
     def build_market_light_snapshot(self, overview: MarketOverview) -> Dict[str, Any]:
@@ -1249,6 +1514,26 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         return snapshot.model_dump()
 
     def _build_market_light_reasons_zh(self, overview: MarketOverview, score: int) -> List[str]:
+        if self.region == "us":
+            context = overview.us_market_context or {}
+            participation = context.get("participation") or {}
+            macro = context.get("macro") or {}
+            reasons = [
+                "11个标普行业ETF上涨/下跌 "
+                f"{participation.get('sector_advancers', 0)}/"
+                f"{participation.get('sector_decliners', 0)}",
+                "等权相对市值加权 "
+                f"{self._format_signed_pct(participation.get('equal_weight_vs_cap_weight_pct'))}",
+                "小盘相对大盘 "
+                f"{self._format_signed_pct(participation.get('small_cap_vs_large_cap_pct'))}",
+            ]
+            dgs2 = macro.get("DGS2") or {}
+            if dgs2:
+                reasons.append(
+                    f"2年期美债 {float(dgs2.get('value') or 0):.2f}%"
+                    f"（日变动 {float(dgs2.get('change') or 0) * 100:+.1f}bp）"
+                )
+            return reasons[:4]
         participation = overview.up_count + overview.down_count
         up_ratio = overview.up_count / participation if participation else None
         reasons: List[str] = []
@@ -1272,6 +1557,26 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         return reasons[:4]
 
     def _build_market_light_reasons_en(self, overview: MarketOverview, score: int) -> List[str]:
+        if self.region == "us":
+            context = overview.us_market_context or {}
+            participation = context.get("participation") or {}
+            macro = context.get("macro") or {}
+            reasons = [
+                "S&P sector ETFs advancing/declining "
+                f"{participation.get('sector_advancers', 0)}/"
+                f"{participation.get('sector_decliners', 0)}",
+                "equal weight vs cap weight "
+                f"{self._format_signed_pct(participation.get('equal_weight_vs_cap_weight_pct'))}",
+                "small cap vs large cap "
+                f"{self._format_signed_pct(participation.get('small_cap_vs_large_cap_pct'))}",
+            ]
+            dgs2 = macro.get("DGS2") or {}
+            if dgs2:
+                reasons.append(
+                    f"2Y Treasury {float(dgs2.get('value') or 0):.2f}% "
+                    f"({float(dgs2.get('change') or 0) * 100:+.1f}bp daily)"
+                )
+            return reasons[:4]
         participation = overview.up_count + overview.down_count
         up_ratio = overview.up_count / participation if participation else None
         reasons: List[str] = []
@@ -1298,6 +1603,28 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         """构建指数行情表格"""
         if not overview.indices:
             return ""
+        if self.region == "us":
+            if self._get_review_language() == "en":
+                lines = [
+                    "| Index | Last | Change % | Open | High | Low | Amplitude | Trade date |",
+                    "|---|---:|---:|---:|---:|---:|---:|---|",
+                ]
+            else:
+                lines = [
+                    "| 指数 | 最新 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 交易日 |",
+                    "|---|---:|---:|---:|---:|---:|---:|---|",
+                ]
+            for idx in overview.indices:
+                arrow = self._get_index_change_arrow(idx.change_pct)
+                lines.append(
+                    f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | "
+                    f"{self._format_optional_number(idx.open)} | "
+                    f"{self._format_optional_number(idx.high)} | "
+                    f"{self._format_optional_number(idx.low)} | "
+                    f"{self._format_optional_pct(idx.amplitude)} | "
+                    f"{idx.trade_date or '-'} |"
+                )
+            return "\n".join(lines)
         if self._get_review_language() == "en":
             lines = [
                 f"| Index | Last | Change % | Open | High | Low | Amplitude | Turnover ({self._get_turnover_unit_label()}) |",
@@ -1347,13 +1674,33 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 )
 
         if language == "en":
-            append_ranking("#### Leading Industry Sectors", "Sector", overview.top_sectors)
-            append_ranking("#### Lagging Industry Sectors", "Sector", overview.bottom_sectors)
+            leading_title = (
+                "#### Leading S&P Sector ETFs"
+                if self.region == "us"
+                else "#### Leading Industry Sectors"
+            )
+            lagging_title = (
+                "#### Lagging S&P Sector ETFs"
+                if self.region == "us"
+                else "#### Lagging Industry Sectors"
+            )
+            append_ranking(leading_title, "Sector", overview.top_sectors)
+            append_ranking(lagging_title, "Sector", overview.bottom_sectors)
             append_ranking("#### Leading Concept Themes", "Concept", overview.top_concepts)
             append_ranking("#### Lagging Concept Themes", "Concept", overview.bottom_concepts)
         else:
-            append_ranking("#### 行业板块领涨 Top 5", "行业板块", overview.top_sectors)
-            append_ranking("#### 行业板块领跌 Top 5", "行业板块", overview.bottom_sectors)
+            leading_title = (
+                "#### 标普行业ETF领涨 Top 5"
+                if self.region == "us"
+                else "#### 行业板块领涨 Top 5"
+            )
+            lagging_title = (
+                "#### 标普行业ETF领跌 Top 5"
+                if self.region == "us"
+                else "#### 行业板块领跌 Top 5"
+            )
+            append_ranking(leading_title, "行业板块", overview.top_sectors)
+            append_ranking(lagging_title, "行业板块", overview.bottom_sectors)
             append_ranking("#### 概念板块领涨 Top 5", "概念板块", overview.top_concepts)
             append_ranking("#### 概念板块领跌 Top 5", "概念板块", overview.bottom_concepts)
         return "\n".join(lines)
@@ -1454,6 +1801,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def _build_market_light_scores(self, overview: MarketOverview) -> Dict[str, Any]:
         """Build the canonical Market Light scores used by reports and alerts."""
+        if self.region == "us":
+            return self._build_us_market_light_scores(overview)
 
         participants = overview.up_count + overview.down_count
         breadth_available = bool(self.profile.has_market_stats and participants > 0)
@@ -1513,6 +1862,134 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "data_quality": data_quality,
         }
 
+    def _build_us_market_light_scores(self, overview: MarketOverview) -> Dict[str, Any]:
+        """Score US risk posture from deterministic, printed market inputs."""
+        context = overview.us_market_context or {}
+        participation = context.get("participation") or {}
+        macro = context.get("macro") or {}
+
+        def clamp(value: float) -> int:
+            return int(round(max(0.0, min(100.0, value))))
+
+        sector_coverage = int(participation.get("sector_coverage") or 0)
+        sector_advancers = int(participation.get("sector_advancers") or 0)
+        sector_ratio = (
+            sector_advancers / sector_coverage
+            if sector_coverage
+            else 0.5
+        )
+        equal_weight_relative = float(
+            participation.get("equal_weight_vs_cap_weight_pct") or 0.0
+        )
+        small_cap_relative = float(
+            participation.get("small_cap_vs_large_cap_pct") or 0.0
+        )
+        participation_score = clamp(
+            sector_ratio * 50.0
+            + (50.0 + equal_weight_relative * 20.0) * 0.25
+            + (50.0 + small_cap_relative * 15.0) * 0.25
+        )
+
+        core_changes = [
+            float(index.change_pct)
+            for index in overview.indices
+            if index.code != "VIX" and index.change_pct is not None
+        ]
+        index_score = clamp(
+            50.0 + (sum(core_changes) / len(core_changes) * 12.0)
+            if core_changes else 50.0
+        )
+
+        volume_ratio = participation.get("spy_volume_ratio_20d")
+        liquidity_score = clamp(
+            50.0 + (float(volume_ratio) - 1.0) * 50.0
+            if volume_ratio is not None else 50.0
+        )
+
+        vix = next((index for index in overview.indices if index.code == "VIX"), None)
+        volatility_score = 50
+        if vix and self._is_positive_number(vix.current):
+            if vix.current <= 15:
+                volatility_score = 72
+            elif vix.current <= 20:
+                volatility_score = 62
+            elif vix.current <= 25:
+                volatility_score = 45
+            elif vix.current <= 30:
+                volatility_score = 32
+            else:
+                volatility_score = 18
+            volatility_score = clamp(
+                volatility_score - float(vix.change_pct or 0.0) * 1.2
+            )
+
+        dgs2_change_bp = float((macro.get("DGS2") or {}).get("change") or 0.0) * 100.0
+        dgs10_change_bp = float((macro.get("DGS10") or {}).get("change") or 0.0) * 100.0
+        dollar_change = float((macro.get("DTWEXBGS") or {}).get("change") or 0.0)
+        macro_score = clamp(
+            50.0
+            - dgs2_change_bp * 0.8
+            - dgs10_change_bp * 0.5
+            - dollar_change * 2.0
+        )
+
+        participation_dimension = {
+            "score": participation_score,
+            "available": sector_coverage >= 8,
+        }
+        volatility_dimension = {
+            "score": volatility_score,
+            "available": vix is not None,
+        }
+        dimensions = {
+            # Keep the canonical fields consumed by existing alert rules.
+            "breadth": dict(participation_dimension),
+            "index": {"score": index_score, "available": bool(core_changes)},
+            "limit": dict(volatility_dimension),
+            # Preserve the US-native dimensions for reports/API consumers.
+            "participation": participation_dimension,
+            "liquidity": {"score": liquidity_score, "available": volume_ratio is not None},
+            "volatility": volatility_dimension,
+            "macro": {
+                "score": macro_score,
+                "available": "DGS2" in macro and "DGS10" in macro,
+            },
+        }
+        score = int(round(
+            participation_score * 0.30
+            + index_score * 0.25
+            + liquidity_score * 0.15
+            + volatility_score * 0.15
+            + macro_score * 0.15
+        ))
+        if self._get_review_language() == "en":
+            label = (
+                "risk-on" if score >= 70
+                else "constructive" if score >= 55
+                else "mixed" if score >= 40
+                else "defensive"
+            )
+        else:
+            label = (
+                "强势" if score >= 70
+                else "偏暖" if score >= 55
+                else "震荡" if score >= 40
+                else "偏弱"
+            )
+        return {
+            "score": score,
+            "temperature_label": label,
+            "dimensions": dimensions,
+            "data_quality": (
+                "ok"
+                if all(
+                    dimensions[key]["available"]
+                    for key in ("participation", "index", "liquidity", "volatility", "macro")
+                )
+                else "partial"
+            ),
+        }
+
     def _build_market_temperature(self, overview: MarketOverview) -> tuple[int, str]:
         scores = self._build_market_light_scores(overview)
         score = int(scores["score"])
@@ -1537,6 +2014,36 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             if sector_rankings_available is None
             else sector_rankings_available
         )
+        if self.region == "us":
+            if review_language == "en":
+                return """### 3. Participation & Liquidity
+(Interpret only SPY/RSP/IWM/QQQ relative performance, sector-ETF coverage, SPY volume ratio, and VIX.)
+
+### 4. Sector Rotation
+(Explain the verified 11-sector ETF leaders and laggards; distinguish broad participation from narrow mega-cap leadership.)
+
+### 5. Macro, Policy & Earnings
+(Connect verified Treasury/USD observations and source-labelled Fed, fiscal, regulatory, political, geopolitical, earnings, and guidance news. Separate facts from inference.)
+
+### 6. Next-session Quant Plan / Strategy Plan
+(Give an offensive/balanced/defensive posture, an exposure band, confirmation conditions, and one invalidation condition derived only from supplied data.)
+
+### 7. Data Boundary & Risks
+(List missing or lagged inputs and end with "For reference only, not investment advice.")"""
+            return """### 三、参与度与流动性
+（只解读RSP/SPY、IWM/SPY、QQQ/SPY、11个行业ETF上涨覆盖、SPY量比与VIX，不写成交易所涨跌家数）
+
+### 四、行业轮动
+（分析已提供的11个标普行业ETF领涨/领跌，区分全面扩散与少数巨头拉动）
+
+### 五、宏观、政策与财报
+（结合已校验的美债/美元和带来源新闻，覆盖联储、财政、监管、关税、政治/地缘以及财报与管理层指引；明确区分事实与推断）
+
+### 六、下一交易日量化计划
+（给出进攻/均衡/防守、仓位区间、确认条件与一个失效条件；只能使用输入数据）
+
+### 七、数据边界与风险
+（逐项列出缺失或滞后数据；最后补充“建议仅供参考，不构成投资建议”。）"""
         if review_language == "en":
             if has_market_stats and has_sector_rankings:
                 return """### 3. Fund Flows
@@ -1644,7 +2151,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         
         # 新闻信息 - 支持 SearchResult 对象或字典
         news_text = ""
-        for i, n in enumerate(news[:6], 1):
+        for i, n in enumerate(news[:10], 1):
             # 兼容 SearchResult 对象和字典
             title = self._compact_news_text(self._get_news_field(n, "title"), limit=90)
             snippet = self._compact_news_text(self._get_news_field(n, "snippet"), limit=220)
@@ -1667,12 +2174,19 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 - Limit-up: {overview.limit_up_count} | Limit-down: {overview.limit_down_count}
 - Turnover: {overview.total_amount:.0f} ({self._get_turnover_unit_label()})"""
 
+            if self.region == "us" and market_stats_available:
+                stats_block = "## US Participation, Liquidity & Macro\n" + self._build_us_stats_block(overview)
+
             if sector_rankings_available:
                 sector_block = f"""## Sector / Theme Performance
 Industry leading: {top_sectors_text if top_sectors_text else "N/A"}
 Industry lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}
 Concept leading: {top_concepts_text if top_concepts_text else "N/A"}
 Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
+                if self.region == "us":
+                    sector_block = f"""## S&P Sector ETF Performance
+Leading: {top_sectors_text if top_sectors_text else "N/A"}
+Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
 
             data_limit_lines = []
             if self.profile.has_market_stats and not market_stats_available:
@@ -1697,12 +2211,19 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 - 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
 - 两市成交额: {overview.total_amount:.0f} 亿元"""
 
+            if self.region == "us" and market_stats_available:
+                stats_block = "## 美股参与度、流动性与宏观定价\n" + self._build_us_stats_block(overview)
+
             if sector_rankings_available:
                 sector_block = f"""## 板块表现
 行业领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
 行业领跌: {bottom_sectors_text if bottom_sectors_text else "暂无数据"}
 概念领涨: {top_concepts_text if top_concepts_text else "暂无数据"}
 概念领跌: {bottom_concepts_text if bottom_concepts_text else "暂无数据"}"""
+                if self.region == "us":
+                    sector_block = f"""## 标普行业ETF表现
+行业领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
+行业领跌: {bottom_sectors_text if bottom_sectors_text else "暂无数据"}"""
 
             data_limit_lines = []
             if self.profile.has_market_stats and not market_stats_available:
@@ -1737,6 +2258,12 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                 if data_limits_block
                 else ""
             )
+            if self.region == "us":
+                data_boundary_requirement += (
+                    "- Treat ETF breadth and volume as explicitly labelled proxies, never as exchange-wide counts.\n"
+                    "- Separate observed facts, source-labelled news, and analytical inference. If policy or earnings evidence is absent, say it is unverified.\n"
+                    "- Do not let headlines override contradictory price, participation, volatility, or rates data.\n"
+                )
             market_summary_hint = (
                 "2-3 sentences summarizing overall market tone, index moves, and liquidity."
                 if market_stats_available
@@ -1750,6 +2277,13 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                 if data_limits_block
                 else ""
             )
+            if self.region == "us":
+                data_boundary_requirement += (
+                    "- ETF宽度与量比只能称为“等价代理指标”，禁止写成交易所全市场涨跌家数或真实资金净流入。\n"
+                    "- 必须把“行情事实、带来源新闻、分析推断”分开；政策或财报证据未检索到时明确写“无法验证”。\n"
+                    "- 新闻叙事与价格、参与度、VIX或利率矛盾时，不得用情绪化叙事覆盖数据。\n"
+                    "- 仓位与方向结论只能来自已打印的确定性评分及其数据，不得自行创造目标位。\n"
+                )
             market_summary_hint = (
                 "2-3句话概括指数、涨跌家数、成交额和情绪温度，明确“强势/偏暖/震荡/偏弱”判断"
                 if market_stats_available
@@ -1763,7 +2297,7 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
         )
         zh_market_scope_name = self._get_market_scope_name("zh")
         zh_report_title = f"{overview.date} 大盘复盘"
-        if self.region in ("jp", "kr"):
+        if self.region != "cn":
             zh_report_title = f"{overview.date} {zh_market_scope_name}大盘复盘"
         workflow_hint = (
             "报告要像交易员盘后工作台：先给结论，再按数据表、主线、催化、计划展开"
@@ -1888,6 +2422,8 @@ Output the report content directly, no extra commentary.
     ) -> str:
         """Generate a deterministic fail-closed report for invalid core data."""
         quality = quality or self._assess_market_data_quality(overview)
+        if self.region == "us":
+            return self._generate_us_data_unavailable_review(overview, quality)
         indices_block = self._build_indices_block(overview)
         missing_fields = list(quality.get("missing_core_fields") or [])
         review_time = datetime.now().strftime("%H:%M")
@@ -1970,8 +2506,58 @@ Output the report content directly, no extra commentary.
 *校验时间: {review_time}*
 """
 
+    def _generate_us_data_unavailable_review(
+        self,
+        overview: MarketOverview,
+        quality: Dict[str, Any],
+    ) -> str:
+        """Fail closed when any required US-market evidence layer is invalid."""
+        labels = {
+            "major_indices": "至少3个同交易日主要指数",
+            "us_trade_date_alignment": "指数与ETF交易日对齐",
+            "us_participation_proxies": "SPY/RSP/IWM/QQQ参与度代理",
+            "us_liquidity_proxy": "SPY相对20日均量",
+            "us_sector_etfs": "11个标普行业ETF（至少8个有效）",
+            "us_treasury_yields": "美国2年/10年期国债收益率",
+        }
+        missing = "、".join(
+            labels.get(item, item)
+            for item in quality.get("missing_core_fields", [])
+        )
+        indices_block = self._build_indices_block(overview)
+        context = overview.us_market_context or {}
+        context_date = context.get("as_of") or "不可用"
+        review_time = datetime.now().strftime("%H:%M")
+        return f"""## {overview.date} 美股大盘复盘（数据校验未通过）
+
+> 核心数据没有同时通过“交易日对齐、指数、参与度、流动性、行业轮动、利率”六层校验。本次禁止生成方向、仓位和买卖计划。
+
+### 一、失败项
+- **缺失或无效**：{missing or "未知"}
+- **有效主要指数**：{quality.get("valid_index_count", 0)} 个
+- **ETF数据日**：{context_date}
+- **处理规则**：缺失不等于0，旧数据不冒充当日数据，模型不补数。
+
+### 二、已取得的指数数据
+{indices_block or "- 暂无通过校验的指数数据。"}
+
+### 三、处理结论
+- 已跳过大模型方向解读和情绪叙事。
+- 已禁止生成仓位区间、目标位、支撑/压力和行业推荐。
+- 待数据源恢复且交易日重新对齐后再执行。
+
+### 四、风险提示
+- 本页只是数据异常告警，不是美股市场结论。
+- 建议仅供参考，不构成投资建议。
+
+---
+*校验时间: {review_time}*
+"""
+
     def _generate_strict_data_review(self, overview: MarketOverview, news: List) -> str:
         """Render a deterministic review without allowing an LLM to rewrite facts."""
+        if self.region == "us":
+            return self._generate_us_template_review(overview, news, strict=True)
         review_time = datetime.now().strftime("%H:%M")
         valid_indices = [
             index
@@ -2153,6 +2739,8 @@ Output the report content directly, no extra commentary.
 
     def _generate_template_review(self, overview: MarketOverview, news: List) -> str:
         """使用模板生成复盘报告（无大模型时的备选方案）"""
+        if self.region == "us":
+            return self._generate_us_template_review(overview, news, strict=False)
         template_language = self._get_template_review_language()
         mood_code = self.profile.mood_index_code
         # 根据 mood_index_code 查找对应指数
@@ -2296,6 +2884,71 @@ Market conditions can change quickly. The data above is for reference only and d
 
 ---
 *复盘时间: {datetime.now().strftime('%H:%M')}*
+"""
+
+    def _generate_us_template_review(
+        self,
+        overview: MarketOverview,
+        news: List,
+        *,
+        strict: bool,
+    ) -> str:
+        """Deterministic US fallback with the same evidence layers as the LLM report."""
+        light = self.build_market_light_snapshot(overview)
+        score = int(light["score"])
+        if score >= 70:
+            posture, exposure = "进攻", "50%-70%"
+        elif score >= 55:
+            posture, exposure = "偏进攻", "35%-55%"
+        elif score >= 40:
+            posture, exposure = "均衡", "20%-40%"
+        else:
+            posture, exposure = "防守", "0%-20%"
+
+        dimensions = self._build_us_market_light_scores(overview).get("dimensions") or {}
+        score_formula = (
+            f"参与度 {int((dimensions.get('participation') or {}).get('score', 50))}×30% + "
+            f"指数 {int((dimensions.get('index') or {}).get('score', 50))}×25% + "
+            f"流动性 {int((dimensions.get('liquidity') or {}).get('score', 50))}×15% + "
+            f"波动率 {int((dimensions.get('volatility') or {}).get('score', 50))}×15% + "
+            f"宏观 {int((dimensions.get('macro') or {}).get('score', 50))}×15% = {score}/100"
+        )
+        news_block = self._build_news_block(news)
+        strict_label = "严格数据版" if strict else "确定性回退版"
+        return f"""## {overview.date} 美股大盘复盘（{strict_label}）
+
+> **结论：{posture}**；模型组合风险仓位区间 **{exposure}**。该结论只由下方已校验数据计算，不根据新闻情绪改分。
+
+### 一、数据校验
+- 核心指数、ETF参与度、行业轮动、SPY量比与2年/10年美债均已通过。
+- 指数和ETF交易日：{overview.date}
+- 评分公式：{score_formula}
+
+### 二、指数结构
+{self._build_indices_block(overview)}
+
+### 三、参与度与流动性
+{self._build_us_stats_block(overview)}
+
+### 四、行业轮动
+{self._build_sector_block(overview)}
+
+### 五、政策、政治与财报证据
+{news_block or "- 本次未取得带来源的有效新闻，无法验证政策、政治或财报催化；不据此调整量化结论。"}
+
+### 六、下一交易日量化计划
+- **规则姿态**：{posture}；风险仓位保持在 {exposure}。
+- **加风险条件**：主要指数同向、RSP与IWM相对SPY改善、行业上涨覆盖扩大，且VIX不反向上升。
+- **减风险条件**：指数转弱，同时行业覆盖收缩，或VIX与短端利率共同上行。
+- **执行纪律**：条件未确认时不追涨；政策或财报新闻必须等官方披露和价格确认。
+
+### 七、数据边界与风险
+- ETF指标是透明的全市场参与度等价代理，不是交易所涨跌家数，也不是资金净流入。
+- 新闻只列带来源事实；本模板不把标题自动解释为利好或利空。
+- 建议仅供参考，不构成投资建议。
+
+---
+*校验时间: {datetime.now().strftime('%H:%M')}*
 """
     
     def _run_daily_review_parts(self) -> MarketLightReviewResult:

@@ -2795,7 +2795,7 @@ class TestMarketAnalyzerBypassFix:
         ma.analyzer.generate_text.assert_called_once()
         _, kwargs = ma.analyzer.generate_text.call_args
         assert kwargs["max_tokens"] == 8192
-        assert kwargs["temperature"] == 0.7
+        assert kwargs["temperature"] == 0.2
 
     def test_generate_template_review_uses_english_shell_for_cn_when_report_language_is_en(self):
         from src.market_analyzer import MarketOverview, MarketIndex
@@ -2885,11 +2885,11 @@ class TestMarketAnalyzerBypassFix:
 
         result = ma.generate_market_review(overview, [])
 
-        assert "## 2026-03-05 大盘复盘" in result
-        assert "### 一、盘面总览" in result
-        assert "今日美股市场整体呈现**小幅下跌**态势" in result
+        assert "## 2026-03-05 美股大盘复盘" in result
+        assert "### 一、数据校验" in result
+        assert "**结论：" in result
         assert "### 6. Strategy Framework" not in result
-        assert "### 六、策略框架" in result
+        assert "### 六、下一交易日量化计划" in result
         assert "### 1. Market Summary" not in result
         assert "US Market Recap" not in result
 
@@ -3593,7 +3593,8 @@ Sector text.
         result = ma._build_indices_block(overview)
 
         assert "CNY 100m" not in result
-        assert "Turnover (USD bn)" in result
+        assert "Trade date" in result
+        assert "Turnover" not in result
         assert "| S&P 500 | 5200.00 |" in result
 
     def test_indices_block_uses_configured_red_up_color_scheme(self):

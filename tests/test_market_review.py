@@ -108,6 +108,28 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         persist_history.assert_called_once()
         self.assertTrue(persist_history.call_args.kwargs["query_id"].startswith("market_review_"))
 
+    def test_us_single_market_push_uses_explicit_chinese_title(self) -> None:
+        notifier = self._make_notifier()
+        market_analyzer = MagicMock()
+        market_analyzer.run_daily_review_with_snapshot.return_value = SimpleNamespace(
+            report="## 2026-07-30 美股大盘复盘\n\nBody",
+            market_light_snapshot={"region": "us", "trade_date": "2026-07-30", "score": 60},
+        )
+
+        with patch.object(
+            market_review_module,
+            "MarketAnalyzer",
+            return_value=market_analyzer,
+        ), patch.object(market_review_module, "_persist_market_review_history"):
+            run_market_review(
+                notifier,
+                config=SimpleNamespace(report_language="zh", market_review_region="us"),
+                send_notification=True,
+            )
+
+        sent_content = notifier.send.call_args.args[0]
+        self.assertTrue(sent_content.startswith("🎯 美股大盘复盘\n\n"))
+
     def test_run_market_review_can_skip_report_file_for_context_generation(self) -> None:
         notifier = self._make_notifier()
         market_analyzer = MagicMock()
