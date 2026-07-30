@@ -2696,6 +2696,38 @@ class TestAgentMemory(unittest.TestCase):
         self.assertTrue(calibration.calibrated)
         self.assertEqual(calibration.calibration_factor, 0.5)
 
+    def test_adaptive_governor_can_only_reduce_calibrated_confidence(self):
+        from src.agent.memory import AgentMemory
+
+        memory = AgentMemory(
+            enabled=True,
+            adaptive_learning_enabled=True,
+        )
+        with patch.object(
+            memory,
+            "_get_accuracy_stats",
+            return_value={
+                "total": 40,
+                "accuracy": 0.80,
+                "direction_accuracy": 0.80,
+                "avg_confidence": 0.5,
+            },
+        ), patch(
+            "src.services.adaptive_learning_service.AdaptiveLearningService.get_latest_snapshot",
+            return_value={
+                "snapshot_date": "2026-07-30",
+                "state": "restricted",
+                "confidence_factor": 0.65,
+                "live_trading_allowed": False,
+            },
+        ):
+            calibration = memory.get_calibration("technical")
+
+        self.assertTrue(calibration.calibrated)
+        self.assertEqual(calibration.calibration_factor, 0.65)
+        self.assertEqual(calibration.governance_state, "restricted")
+        self.assertEqual(calibration.governance_snapshot_date, "2026-07-30")
+
 
 class TestBaseAgentMemoryIntegration(unittest.TestCase):
     """Test BaseAgent hooks for memory injection and calibration."""

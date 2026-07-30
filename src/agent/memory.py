@@ -44,6 +44,9 @@ class CalibrationResult:
     avg_confidence: float = 0.5
     calibrated: bool = False  # True if samples >= threshold
     calibration_factor: float = 1.0  # multiply raw confidence by this
+    governance_state: str = ""
+    governance_factor: float = 1.0
+    governance_snapshot_date: str = ""
 
 
 @dataclass
@@ -71,9 +74,15 @@ class AgentMemory:
         cal = memory.get_calibration("technical", stock_code="600519")
     """
 
-    def __init__(self, enabled: bool = False, min_samples: int = _MIN_CALIBRATION_SAMPLES):
+    def __init__(
+        self,
+        enabled: bool = False,
+        min_samples: int = _MIN_CALIBRATION_SAMPLES,
+        adaptive_learning_enabled: bool = False,
+    ):
         self.enabled = enabled
         self.min_samples = min_samples
+        self.adaptive_learning_enabled = adaptive_learning_enabled
 
     @classmethod
     def from_config(cls) -> "AgentMemory":
@@ -82,7 +91,15 @@ class AgentMemory:
             from src.config import get_config
             config = get_config()
             enabled = getattr(config, "agent_memory_enabled", False)
-            return cls(enabled=enabled)
+            adaptive_learning_enabled = getattr(
+                config,
+                "adaptive_learning_enabled",
+                False,
+            )
+            return cls(
+                enabled=enabled,
+                adaptive_learning_enabled=adaptive_learning_enabled,
+            )
         except Exception:
             return cls(enabled=False)
 
@@ -177,6 +194,8 @@ class AgentMemory:
                     1.0,
                     max(0.5, result.historical_accuracy / 0.5),
                 )
+                if self.adaptive_learning_enabled:
+                    self._apply_adaptive_governance(result)
             else:
                 result.calibrated = False
                 result.calibration_factor = 1.0
@@ -185,6 +204,32 @@ class AgentMemory:
             logger.debug("[AgentMemory] calibration failed for %s: %s", agent_name, exc)
 
         return result
+
+    @staticmethod
+    def _apply_adaptive_governance(result: CalibrationResult) -> None:
+        """Apply the latest objective daily governor without ever boosting."""
+
+        try:
+            from src.services.adaptive_learning_service import (
+                AdaptiveLearningService,
+            )
+
+            snapshot = AdaptiveLearningService().get_latest_snapshot()
+            if not isinstance(snapshot, dict):
+                return
+            factor = float(snapshot.get("confidence_factor") or 1.0)
+            factor = min(1.0, max(0.5, factor))
+            result.governance_state = str(snapshot.get("state") or "")
+            result.governance_factor = factor
+            result.governance_snapshot_date = str(
+                snapshot.get("snapshot_date") or ""
+            )
+            result.calibration_factor = min(
+                result.calibration_factor,
+                factor,
+            )
+        except Exception as exc:
+            logger.debug("[AgentMemory] adaptive governance unavailable: %s", exc)
 
     def calibrate_confidence(self, agent_name: str, raw_confidence: float, stock_code: Optional[str] = None) -> float:
         """Apply calibration to a raw confidence value.

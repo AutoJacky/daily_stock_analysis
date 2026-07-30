@@ -795,6 +795,54 @@ def _run_auto_backtest(config: Config) -> str:
             if getattr(config, "agent_memory_enabled", False)
             else "未启用；本轮只记录结果，不改动置信度"
         )
+        governance_lines = []
+        if getattr(config, "adaptive_learning_enabled", False):
+            try:
+                from src.services.adaptive_learning_service import (
+                    AdaptiveLearningService,
+                )
+
+                governance = AdaptiveLearningService().run_daily(
+                    outcome_stats=outcome_stats,
+                    backtest_summary=learning_summary,
+                )
+                state_labels = {
+                    "collecting": "采样积累",
+                    "data_blocked": "数据阻断",
+                    "restricted": "自动限制",
+                    "guarded": "谨慎校准",
+                    "stable": "稳定观察",
+                }
+                state = str(governance.get("state") or "collecting")
+                factor = float(governance.get("confidence_factor") or 1.0)
+                shadow_profile = governance.get("shadow_champion_profile")
+                governance_lines = [
+                    "",
+                    "## 自主治理状态",
+                    "",
+                    (
+                        f"- **状态：** {state_labels.get(state, state)}；"
+                        f"下一轮全局置信度系数上限 {factor:.2f}"
+                    ),
+                    (
+                        "- **影子冠军：** "
+                        + (
+                            f"{shadow_profile}（继续模拟，不切换真实策略）"
+                            if shadow_profile
+                            else "暂无，继续积累样本"
+                        )
+                    ),
+                    "- **自动回滚：** 命中率、模拟收益或数据覆盖恶化时，自动进入限制状态。",
+                    "- **真实下单：** 永久关闭；治理统计不能自行打开券商交易权限。",
+                ]
+                logger.info(
+                    "自适应模型治理快照已保存: state=%s factor=%.2f shadow=%s",
+                    state,
+                    factor,
+                    shadow_profile or "none",
+                )
+            except Exception as exc:
+                logger.warning("自适应模型治理失败（已忽略）: %s", exc)
         return "\n".join(
             [
                 "# 🧭 每日预测复核与校准",
@@ -820,7 +868,7 @@ def _run_auto_backtest(config: Config) -> str:
                 "- **数据缺失：** 行情、财报或公告证据不足时，强制降级为观察，不生成确定性买卖结论。",
                 "- **防过拟合：** 少于 30 个完成样本不调整；达到门槛后也只允许降低置信度。",
                 "- **多周期复核：** 同时检查 1/3/5/10 个交易日，避免只挑有利周期。",
-            ]
+            ] + governance_lines
         )
     except Exception as exc:
         logger.warning(f"自动回测失败（已忽略）: {exc}")

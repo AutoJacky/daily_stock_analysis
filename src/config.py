@@ -861,6 +861,7 @@ class Config:
     agent_deep_research_budget: int = 30000  # Max token budget for deep research
     agent_deep_research_timeout: int = 180  # Max seconds for /research command before returning timeout
     agent_memory_enabled: bool = False  # Enable memory & calibration system
+    adaptive_learning_enabled: bool = False  # Persist daily model-governance snapshots
     agent_skill_autoweight: bool = True  # Auto-weight skills by backtest performance
     agent_skill_routing: str = "auto"  # Skill routing: 'auto' (regime-based) or 'manual'
     agent_context_compression_enabled: bool = False  # Compress visible chat history before Agent calls
@@ -1810,6 +1811,10 @@ class Config:
                 minimum=30,
             ),
             agent_memory_enabled=os.getenv('AGENT_MEMORY_ENABLED', 'false').lower() == 'true',
+            adaptive_learning_enabled=os.getenv(
+                'ADAPTIVE_LEARNING_ENABLED',
+                'false',
+            ).lower() == 'true',
             agent_skill_autoweight=(
                 os.getenv('AGENT_SKILL_AUTOWEIGHT')
                 or os.getenv('AGENT_STRATEGY_AUTOWEIGHT', 'true')

@@ -486,6 +486,48 @@ class BacktestSummary(Base):
     )
 
 
+class AdaptiveLearningSnapshot(Base):
+    """Daily fail-closed governance state derived from objective outcomes."""
+
+    __tablename__ = 'adaptive_learning_snapshots'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_date = Column(Date, nullable=False, index=True)
+    scope = Column(String(16), nullable=False, default='global', index=True)
+    policy_version = Column(String(32), nullable=False, index=True)
+    state = Column(String(24), nullable=False, index=True)
+
+    total_outcomes = Column(Integer, nullable=False, default=0)
+    completed_outcomes = Column(Integer, nullable=False, default=0)
+    unable_outcomes = Column(Integer, nullable=False, default=0)
+    hit_rate_pct = Column(Float)
+    unable_rate_pct = Column(Float)
+    backtest_direction_accuracy_pct = Column(Float)
+    avg_simulated_return_pct = Column(Float)
+
+    confidence_factor = Column(Float, nullable=False, default=1.0)
+    shadow_champion_profile = Column(String(16))
+    live_trading_allowed = Column(Boolean, nullable=False, default=False)
+    reasons_json = Column(Text)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+    updated_at = Column(
+        DateTime,
+        default=utc_naive_now,
+        onupdate=utc_naive_now,
+        nullable=False,
+        index=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            'snapshot_date',
+            'scope',
+            'policy_version',
+            name='uix_adaptive_learning_snapshot_day_scope_version',
+        ),
+    )
+
+
 class PortfolioAccount(Base):
     """Portfolio account metadata."""
 

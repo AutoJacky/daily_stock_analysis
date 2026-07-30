@@ -69,3 +69,57 @@ def test_auto_backtest_is_fail_open() -> None:
         side_effect=RuntimeError("database unavailable"),
     ):
         assert main._run_auto_backtest(_config()) == ""
+
+
+def test_auto_backtest_persists_adaptive_governance_when_enabled() -> None:
+    backtest = MagicMock()
+    backtest.run_backtest.return_value = {
+        "processed": 0,
+        "saved": 0,
+        "completed": 0,
+        "insufficient": 0,
+        "errors": 0,
+    }
+    backtest.get_global_summary.return_value = {
+        "total_evaluations": 40,
+        "direction_accuracy": 0.48,
+    }
+    outcomes = MagicMock()
+    outcomes.run_outcomes.return_value = {"evaluated": 4}
+    outcomes.get_stats.return_value = {
+        "total": 40,
+        "completed": 35,
+        "unable": 5,
+        "hit": 17,
+        "miss": 18,
+        "hit_rate_pct": 48.57,
+    }
+    governor = MagicMock()
+    governor.run_daily.return_value = {
+        "state": "guarded",
+        "confidence_factor": 0.85,
+        "shadow_champion_profile": None,
+        "live_trading_allowed": False,
+    }
+
+    with patch(
+        "src.services.backtest_service.BacktestService",
+        return_value=backtest,
+    ), patch(
+        "src.services.decision_signal_outcome_service.DecisionSignalOutcomeService",
+        return_value=outcomes,
+    ), patch(
+        "src.services.adaptive_learning_service.AdaptiveLearningService",
+        return_value=governor,
+    ):
+        report = main._run_auto_backtest(
+            _config(adaptive_learning_enabled=True)
+        )
+
+    governor.run_daily.assert_called_once_with(
+        outcome_stats=outcomes.get_stats.return_value,
+        backtest_summary=backtest.get_global_summary.return_value,
+    )
+    assert "自主治理状态" in report
+    assert "下一轮全局置信度系数上限 0.85" in report
+    assert "真实下单" in report

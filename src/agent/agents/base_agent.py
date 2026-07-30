@@ -315,4 +315,11 @@ class BaseAgent(ABC):
             "calibrated_confidence": opinion.confidence,
             "factor": calibration.calibration_factor,
             "samples": calibration.total_samples,
+            "governance_state": getattr(calibration, "governance_state", ""),
+            "governance_factor": getattr(calibration, "governance_factor", 1.0),
+            "governance_snapshot_date": getattr(
+                calibration,
+                "governance_snapshot_date",
+                "",
+            ),
         }

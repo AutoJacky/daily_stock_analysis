@@ -57,6 +57,7 @@ PushPlus 是本节的明确例外：
 - 每页都按渲染后的最终 HTML 实测，使用 18KB 保守安全线；表格和强调样式膨胀后仍超限时会继续拆分，最终发送入口也会拒绝任何超限页，不再把“服务端验证错误”误判成限流后原样重发。
 - 发送器在同一个通知服务实例内共享五次/分钟滚动窗口；长报告的后续分页或紧随其后的消息会等待额度释放。只有 HTTP 429 或明确的频率/限流响应会等待窗口后重试一次。
 - PushPlus 接口采用异步投递：同步 `code=200` 只表示请求已受理，日志不会再把它表述为微信已最终送达。若需要程序自动核对最终投递状态，还需另行配置 PushPlus 开放接口 AccessKey 或可接收回调的公网地址。
+- 每日模型复核在启用 `ADAPTIVE_LEARNING_ENABLED` 时会追加“自主治理状态”：展示客观样本对应的自动限制系数和影子候选；影子候选只参与后续模拟验证，真实下单始终关闭。
 
 兼容性排除说明：
 - 本轮未改动 `src/notification_sender/wechat_sender.py`、`src/notification_sender/slack_sender.py`、`src/notification_sender/telegram_sender.py` 的发送路径；`src/notification_sender/feishu_sender.py` 新增 `send_feishu_file()` 文件发送路径，Webhook 模式回退为发送文件内容文本，App Bot 文字发送路径（`send_to_feishu` → `_send_via_app_bot`）保持不变。
