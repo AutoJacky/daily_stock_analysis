@@ -22,6 +22,8 @@ _MARKDOWN_TITLE_RE = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
 _PUSHPLUS_RATE_LIMIT = 5
 _PUSHPLUS_RATE_WINDOW_SECONDS = 60.5
 _PUSHPLUS_TRANSIENT_RETRY_SECONDS = 3.0
+_PUSHPLUS_CONTENT_SAFETY_RATIO = 0.90
+_PUSHPLUS_MIN_SOURCE_BUDGET = 64
 
 
 class PushplusSender:
@@ -40,6 +42,14 @@ class PushplusSender:
         # instance is shared by NotificationService, so the queue also covers
         # a long stock report followed immediately by a market review.
         self._pushplus_request_slots = deque()
+
+    def _effective_html_limit(self) -> int:
+        """Return a conservative final-HTML limit for every send path."""
+
+        return max(
+            1,
+            int(self._pushplus_max_bytes * _PUSHPLUS_CONTENT_SAFETY_RATIO),
+        )
         
     def send_to_pushplus(
         self,
@@ -84,7 +94,7 @@ class PushplusSender:
         try:
             html_content = markdown_to_pushplus_html(content)
             content_bytes = len(html_content.encode('utf-8'))
-            if content_bytes > self._pushplus_max_bytes:
+            if content_bytes > self._effective_html_limit():
                 logger.info(
                     "PushPlus HTML 内容超长(%s字节/%s字符)，将分批发送",
                     content_bytes,
@@ -94,7 +104,6 @@ class PushplusSender:
                     api_url,
                     content,
                     title,
-                    self._pushplus_max_bytes,
                     timeout_seconds=timeout_seconds,
                 )
 
@@ -135,6 +144,16 @@ class PushplusSender:
         *,
         timeout_seconds: Optional[float] = None,
     ) -> bool:
+        content_bytes = len(content.encode("utf-8"))
+        effective_limit = self._effective_html_limit()
+        if content_bytes > effective_limit:
+            logger.error(
+                "拒绝发送超限PushPlus HTML：%s字节/%s字节",
+                content_bytes,
+                effective_limit,
+            )
+            return False
+
         payload = {
             "token": self._pushplus_token,
             "title": title,
@@ -172,7 +191,10 @@ class PushplusSender:
                 except (TypeError, ValueError):
                     result = {}
                 if result.get('code') == 200:
-                    logger.info("PushPlus 消息发送成功")
+                    # PushPlus handles delivery asynchronously.  A 200 response
+                    # means that the request was accepted, not that WeChat has
+                    # already completed the final delivery.
+                    logger.info("PushPlus 消息请求已受理")
                     return True
 
             retry_delay = self._retry_delay_seconds(response.status_code, result)
@@ -186,7 +208,12 @@ class PushplusSender:
 
             if response.status_code == 200:
                 error_msg = result.get('msg', '未知错误')
-                logger.error(f"PushPlus 返回错误: {error_msg}")
+                logger.error(
+                    "PushPlus 返回错误(code=%s, html_bytes=%s): %s",
+                    result.get("code"),
+                    content_bytes,
+                    error_msg,
+                )
             else:
                 logger.error(f"PushPlus 请求失败: HTTP {response.status_code}")
             return False
@@ -207,9 +234,6 @@ class PushplusSender:
             "每分钟",
             "too many",
             "rate limit",
-            # This is the response observed when the account-wide 5/minute
-            # validation gate rejected pages 6–8.
-            "服务端验证错误",
         )
         if status_code == 429 or business_code == 429 or any(
             marker in message for marker in rate_markers
@@ -250,44 +274,72 @@ class PushplusSender:
         api_url: str,
         content: str,
         title: str,
-        max_bytes: int,
         *,
         timeout_seconds: Optional[float] = None,
     ) -> bool:
         """Split Markdown first, then render every page as standalone mobile HTML."""
 
         wrapper_bytes = len(markdown_to_pushplus_html("").encode("utf-8"))
-        budget = max(500, max_bytes - wrapper_bytes - 2500)
-        byte_len = lambda value: len(value.encode("utf-8"))
-        chunks = chunk_markdown_preserving_blocks(
-            content,
-            budget,
-            len_fn=byte_len,
-            add_page_marker=False,
+        # Keep headroom below the documented content limit.  Inline mobile
+        # styles can make a short Markdown table expand many times after
+        # rendering, so source length alone is not a safe proxy.
+        safe_max_bytes = self._effective_html_limit()
+        budget = max(
+            _PUSHPLUS_MIN_SOURCE_BUDGET,
+            safe_max_bytes - wrapper_bytes - 512,
         )
+        byte_len = lambda value: len(value.encode("utf-8"))
+        chunks = []
+        rendered_chunks = []
 
-        # Escaped source text may expand after Markdown-to-HTML conversion. Tighten
-        # the source budget until every rendered page stays below the API limit.
-        for _ in range(6):
-            rendered_chunks = [markdown_to_pushplus_html(chunk) for chunk in chunks]
-            if all(len(chunk.encode("utf-8")) <= max_bytes for chunk in rendered_chunks):
-                break
-            budget = max(500, int(budget * 0.72))
+        # Escaping and per-cell table styles can substantially expand the final
+        # payload.  Continue tightening until the *last rendered result* is
+        # measured safe; a fixed retry count previously let an oversized final
+        # page escape after the last re-split.
+        while True:
             chunks = chunk_markdown_preserving_blocks(
                 content,
                 budget,
                 len_fn=byte_len,
                 add_page_marker=False,
             )
-        else:
             rendered_chunks = [markdown_to_pushplus_html(chunk) for chunk in chunks]
+            if all(
+                len(chunk.encode("utf-8")) <= safe_max_bytes
+                for chunk in rendered_chunks
+            ):
+                break
+
+            if budget <= _PUSHPLUS_MIN_SOURCE_BUDGET:
+                largest_page = max(
+                    len(chunk.encode("utf-8")) for chunk in rendered_chunks
+                )
+                logger.error(
+                    "PushPlus 内容无法安全分页：最大HTML页%s字节，安全上限%s字节",
+                    largest_page,
+                    safe_max_bytes,
+                )
+                return False
+
+            budget = max(
+                _PUSHPLUS_MIN_SOURCE_BUDGET,
+                int(budget * 0.72),
+            )
 
         total_chunks = len(chunks)
         success_count = 0
 
         logger.info(f"PushPlus 分批发送：共 {total_chunks} 批")
 
-        for i, html_chunk in enumerate(rendered_chunks):
+        for i, (markdown_chunk, html_chunk) in enumerate(zip(chunks, rendered_chunks)):
+            logger.info(
+                "PushPlus 第 %s/%s 批内容校验通过：Markdown=%s字节，HTML=%s字节/%s字节",
+                i + 1,
+                total_chunks,
+                len(markdown_chunk.encode("utf-8")),
+                len(html_chunk.encode("utf-8")),
+                safe_max_bytes,
+            )
             chunk_title = f"{title} · {i+1}/{total_chunks}" if total_chunks > 1 else title
             if self._send_pushplus_message(
                 api_url,

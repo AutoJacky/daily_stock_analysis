@@ -1458,9 +1458,23 @@ class TestPushplusSender(unittest.TestCase):
 
     @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
     @mock.patch("src.notification_sender.pushplus_sender.requests.post")
-    def test_retries_account_rate_validation_once(self, mock_post, mock_sleep):
+    def test_validation_error_does_not_retry_same_payload(self, mock_post, mock_sleep):
+        mock_post.return_value = _response(
+            200,
+            {"code": 999, "msg": "服务端验证错误"},
+        )
+        sender = PushplusSender(_config(pushplus_token="TOKEN"))
+
+        self.assertFalse(sender.send_to_pushplus("# 大盘复盘\n\n明日计划"))
+
+        self.assertEqual(mock_post.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    def test_retries_explicit_rate_limit_once(self, mock_post, mock_sleep):
         mock_post.side_effect = [
-            _response(200, {"code": 500, "msg": "服务端验证错误"}),
+            _response(200, {"code": 429, "msg": "请求频率太高"}),
             _response(200, {"code": 200}),
         ]
         sender = PushplusSender(_config(pushplus_token="TOKEN"))
@@ -1471,6 +1485,58 @@ class TestPushplusSender(unittest.TestCase):
         self.assertTrue(
             any(call.args and call.args[0] >= 60 for call in mock_sleep.call_args_list)
         )
+
+    @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    def test_table_heavy_report_checks_final_html_after_every_resplit(
+        self,
+        mock_post,
+        _mock_sleep,
+    ):
+        mock_post.return_value = _response(200, {"code": 200})
+        sender = PushplusSender(_config(pushplus_token="TOKEN"))
+        index_rows = "\n".join(
+            f"| 指数{i} | 3800.00 | -2.00% | 3810.00 | 3820.00 | 3770.00 | 3.00% | 12000 |"
+            for i in range(6)
+        )
+        sector_rows = "\n".join(
+            f"| {i} | 计算机、通信和其他电子设备制造业{i} | -8.02% |"
+            for i in range(10)
+        )
+        content = (
+            "# 🎯 大盘复盘\n\n"
+            "## 严格数据版\n\n"
+            "> 结构化盘面信号：偏弱。本报告只呈现程序计算的行情事实。\n\n"
+            "### 指数结构\n\n"
+            "| 指数 | 收盘 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 成交额 |\n"
+            "|---|---:|---:|---:|---:|---:|---:|---:|\n"
+            f"{index_rows}\n\n"
+            "### 板块排名\n\n"
+            "| 排名 | 行业板块 | 涨跌幅 |\n"
+            "|---:|---|---:|\n"
+            f"{sector_rows}\n\n"
+            "### 次日量化计划\n\n"
+            "- **规则姿态**：防守；模型组合仓位区间 0%-20%。\n"
+            "- **风险警报**：数据不足时不提高置信度。\n"
+        )
+
+        self.assertTrue(sender.send_to_pushplus(content))
+
+        safe_max = int(sender._pushplus_max_bytes * 0.90)
+        self.assertGreaterEqual(mock_post.call_count, 2)
+        for request in mock_post.call_args_list:
+            html_page = request.kwargs["json"]["content"]
+            self.assertLessEqual(len(html_page.encode("utf-8")), safe_max)
+
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    def test_impossibly_small_html_limit_fails_before_any_request(self, mock_post):
+        cfg = _config(pushplus_token="TOKEN")
+        cfg.pushplus_max_bytes = 500
+        sender = PushplusSender(cfg)
+
+        self.assertFalse(sender.send_to_pushplus("# 大盘复盘\n\n明日计划"))
+
+        mock_post.assert_not_called()
 
     @mock.patch("src.notification_sender.pushplus_sender.time.monotonic", return_value=100.0)
     @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
