@@ -56,6 +56,17 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+
+      - name: 恢复历史预测与校准数据库
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/stock_analysis.db
+            data/stock_analysis.db-wal
+            data/stock_analysis.db-shm
+          key: dsa-learning-v2-${{ runner.os }}-${{ github.event_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            dsa-learning-v2-${{ runner.os }}-${{ github.event_name }}-
       
       - name: 安装依赖
         run: |
@@ -399,6 +410,7 @@ jobs:
           REPORT_TYPE: ${{ vars.REPORT_TYPE || secrets.REPORT_TYPE || 'simple' }}
           REPORT_LANGUAGE: ${{ vars.REPORT_LANGUAGE || secrets.REPORT_LANGUAGE || '' }}
           REPORT_SHOW_LLM_MODEL: ${{ vars.REPORT_SHOW_LLM_MODEL || secrets.REPORT_SHOW_LLM_MODEL || 'true' }}
+          AGENT_MEMORY_ENABLED: ${{ vars.AGENT_MEMORY_ENABLED || secrets.AGENT_MEMORY_ENABLED || 'true' }}
           SINGLE_STOCK_NOTIFY: ${{ vars.SINGLE_STOCK_NOTIFY || secrets.SINGLE_STOCK_NOTIFY || 'false' }}
           MARKET_REVIEW_ENABLED: ${{ vars.MARKET_REVIEW_ENABLED || secrets.MARKET_REVIEW_ENABLED || 'true' }}
           MARKET_REVIEW_STRICT_DATA_ONLY: ${{ vars.MARKET_REVIEW_STRICT_DATA_ONLY || secrets.MARKET_REVIEW_STRICT_DATA_ONLY || 'false' }}
@@ -409,6 +421,11 @@ jobs:
           # 系统配置
           # ==========================================
           LOG_LEVEL: INFO
+          DSA_TRIGGER_SOURCE: ${{ github.event_name == 'schedule' && 'schedule' || 'manual' }}
+          DATABASE_PATH: ./data/stock_analysis.db
+          BACKTEST_ENABLED: ${{ vars.BACKTEST_ENABLED || secrets.BACKTEST_ENABLED || 'true' }}
+          BACKTEST_EVAL_WINDOW_DAYS: ${{ vars.BACKTEST_EVAL_WINDOW_DAYS || secrets.BACKTEST_EVAL_WINDOW_DAYS || '10' }}
+          BACKTEST_MIN_AGE_DAYS: ${{ vars.BACKTEST_MIN_AGE_DAYS || secrets.BACKTEST_MIN_AGE_DAYS || '14' }}
           MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '1' }}
           # 基本面需先取估值再拉财报，云端网络下默认 8 秒容易只剩约 2 秒给财报。
           FUNDAMENTAL_STAGE_TIMEOUT_SECONDS: ${{ vars.FUNDAMENTAL_STAGE_TIMEOUT_SECONDS || secrets.FUNDAMENTAL_STAGE_TIMEOUT_SECONDS || '30' }}
@@ -532,6 +549,38 @@ jobs:
           else
             python main.py $FORCE_RUN_ARG $NOTIFY_ARG
           fi
+
+      - name: 校验每日学习数据库
+        id: learning_db
+        if: always() && github.event_name == 'schedule'
+        run: |
+          if [ ! -f data/stock_analysis.db ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ 学习数据库不存在，本轮不保存缓存"
+            exit 0
+          fi
+          python - <<'PY'
+          import sqlite3
+
+          path = "data/stock_analysis.db"
+          with sqlite3.connect(path) as connection:
+              connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+              result = connection.execute("PRAGMA integrity_check").fetchone()
+          if not result or result[0] != "ok":
+              raise SystemExit(f"learning database integrity check failed: {result}")
+          print("✅ 学习数据库完整性检查通过")
+          PY
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: 保存每日预测与校准数据库
+        uses: actions/cache/save@v4
+        if: always() && github.event_name == 'schedule' && steps.learning_db.outputs.ready == 'true'
+        with:
+          path: |
+            data/stock_analysis.db
+            data/stock_analysis.db-wal
+            data/stock_analysis.db-shm
+          key: dsa-learning-v2-${{ runner.os }}-${{ github.event_name }}-${{ github.run_id }}-${{ github.run_attempt }}
       
       - name: 上传分析报告
         uses: actions/upload-artifact@v6

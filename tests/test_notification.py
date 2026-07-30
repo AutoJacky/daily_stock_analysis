@@ -660,6 +660,107 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
 
 class TestNotificationServiceReportGeneration(unittest.TestCase):
+    @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    @mock.patch("src.notification.get_config")
+    def test_pushplus_digest_covers_34_stocks_within_request_budget(
+        self,
+        mock_get_config: mock.MagicMock,
+        mock_post: mock.MagicMock,
+        _mock_sleep: mock.MagicMock,
+    ):
+        mock_get_config.return_value = _make_config(
+            pushplus_token="TOKEN",
+            report_renderer_enabled=False,
+            report_show_llm_model=False,
+        )
+        mock_post.return_value = _make_response(200, {"code": 200})
+        service = NotificationService()
+        results = [
+            AnalysisResult(
+                code=f"{600000 + index}",
+                name=f"自选股{index + 1}",
+                sentiment_score=40 + index % 40,
+                trend_prediction="震荡",
+                operation_advice=("买入" if index % 3 == 0 else "观望"),
+                confidence_level="低" if index % 4 == 0 else "中",
+                buy_reason="量价与基本面仍需共同确认",
+                key_points="等待成交量、资金流和公告证据确认",
+                risk_warning="不追高，跌破结构风险线后重新评估",
+                dashboard={
+                    "phase_decision": {
+                        "data_limitations": ["财报结构化字段缺失", "公告检索未覆盖全量"]
+                        if index % 4 == 0
+                        else []
+                    }
+                },
+            )
+            for index in range(34)
+        ]
+
+        digest = service.generate_pushplus_digest(results)
+        self.assertIn("自选股1（600000）", digest)
+        self.assertIn("自选股34（600033）", digest)
+        self.assertIn("数据缺口", digest)
+        self.assertTrue(service.send_to_pushplus(digest))
+        self.assertLessEqual(mock_post.call_count, 2)
+        for request in mock_post.call_args_list:
+            self.assertEqual(request.kwargs["json"]["template"], "html")
+
+    def test_pushplus_digest_exposes_verified_event_and_failed_stock(self):
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=62,
+            trend_prediction="震荡",
+            operation_advice="观察",
+            confidence_level="中",
+            dashboard={
+                "intelligence": {
+                    "verified_events": [
+                        {
+                            "published_date": "2026-07-30",
+                            "source": "上交所",
+                            "title": "公司发布回购公告",
+                            "url": "https://www.sse.com.cn/disclosure/example",
+                        }
+                    ]
+                },
+                "phase_decision": {"data_limitations": []},
+            },
+        )
+
+        digest = service.generate_pushplus_digest(
+            [result],
+            requested_codes=["600519", "000001"],
+            failed_items=[("000001", "provider unavailable")],
+        )
+
+        self.assertIn("本轮请求 2 只｜成功 1｜失败 1", digest)
+        self.assertIn(
+            "[公司发布回购公告](https://www.sse.com.cn/disclosure/example)",
+            digest,
+        )
+        self.assertIn("000001", digest)
+        self.assertIn("不得把缺失结果理解为“中性”", digest)
+
+    def test_pushplus_digest_reports_all_failed_run(self):
+        service = NotificationService()
+
+        digest = service.generate_pushplus_digest(
+            [],
+            requested_codes=["600519", "000001"],
+            failed_items=[
+                ("600519", "timeout"),
+                ("000001", "provider unavailable"),
+            ],
+        )
+
+        self.assertIn("本轮请求 2 只｜成功 0｜失败 2", digest)
+        self.assertIn("600519", digest)
+        self.assertIn("000001", digest)
+
     """报告生成与选路相关测试。"""
 
     def test_signal_metadata_uses_resolved_eight_state_action(self):

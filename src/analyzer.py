@@ -1804,6 +1804,7 @@ def _apply_verified_event_evidence(
 ) -> None:
     """Render event facts from provider objects instead of LLM recollection."""
     rendered: List[str] = []
+    verified_events: List[Dict[str, str]] = []
     risks: List[str] = []
     catalysts: List[str] = []
     seen: set[tuple[str, str, str]] = set()
@@ -1815,24 +1816,45 @@ def _apply_verified_event_evidence(
         published = str(item.get("published_date") or "").strip()
         source = str(item.get("source") or "").strip()
         url = str(item.get("url") or "").strip()
-        if not title or not published or not source or not url:
+        if (
+            not title
+            or not published
+            or not source
+            or not url
+            or not url.lower().startswith(("https://", "http://"))
+        ):
             continue
         identity = (title, published, source)
         if identity in seen:
             continue
         seen.add(identity)
-        fact = f"[{published}][{source}] {title}（{url}）"
+        safe_title = title.replace("[", "［").replace("]", "］")
+        safe_source = source.replace("[", "［").replace("]", "］")
+        fact = (
+            f"[{published}][{safe_source}] {safe_title}"
+            f"（[查看来源 ↗]({url})）"
+        )
+        legacy_fact = f"[{published}][{safe_source}] {safe_title}（{url}）"
         rendered.append(fact)
+        verified_events.append(
+            {
+                "published_date": published,
+                "source": source,
+                "title": title,
+                "url": url,
+            }
+        )
         is_risk = any(term in title for term in risk_terms)
         direct_in_title = bool(item.get("direct_in_title"))
         if direct_in_title and is_risk:
-            risks.append(fact)
+            risks.append(legacy_fact)
         elif direct_in_title and any(term in title for term in catalyst_terms):
-            catalysts.append(fact)
+            catalysts.append(legacy_fact)
         if len(rendered) >= 5:
             break
 
     intelligence["latest_news"] = "；".join(rendered) if rendered else "无可核验事件条目"
+    intelligence["verified_events"] = verified_events
     intelligence["risk_alerts"] = risks + [
         "信息检索不等同交易所/公司公告全量核验，操作前仍需核对官方披露。"
     ]

@@ -53,6 +53,31 @@ class TestPipelinePrefetchBehavior(unittest.TestCase):
             ["000001"], use_bulk=False
         )
 
+    def test_run_notifies_explicit_failed_codes_when_no_analysis_succeeds(self):
+        pipeline = self._build_pipeline(
+            process_result=SimpleNamespace(
+                code="000001",
+                success=False,
+                error_message="provider unavailable",
+            )
+        )
+        pipeline._send_notifications = MagicMock()
+
+        results = pipeline.run(
+            stock_codes=["000001"],
+            dry_run=False,
+            send_notification=True,
+        )
+
+        self.assertEqual(results, [])
+        pipeline._send_notifications.assert_called_once()
+        call_kwargs = pipeline._send_notifications.call_args.kwargs
+        self.assertEqual(call_kwargs["requested_codes"], ["000001"])
+        self.assertEqual(
+            call_kwargs["failed_items"],
+            [("000001", "provider unavailable")],
+        )
+
     def test_run_dry_run_counts_existing_data_by_effective_trading_date(self):
         pipeline = self._build_pipeline(process_result=None)
         pipeline._resolve_resume_target_date = MagicMock(

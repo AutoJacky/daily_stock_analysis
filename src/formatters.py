@@ -20,6 +20,8 @@ MIN_MAX_WORDS = 10
 MIN_MAX_BYTES = 40
 FENCED_CODE_BLOCK_RE = re.compile(r"(^```[^\n]*\n.*?^```[ \t]*$)", re.MULTILINE | re.DOTALL)
 FENCED_CODE_BLOCK_PLACEHOLDER = "@@DSA_FENCED_CODE_BLOCK_{}@@"
+MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
+RAW_HTTP_URL_RE = re.compile(r"https?://[^\s<>\]）)。，；、]+")
 
 # Unicode code point ranges for special characters.
 _SPECIAL_CHAR_RANGE = (0x10000, 0xFFFFF)
@@ -224,6 +226,164 @@ def markdown_to_html_document(markdown_text: str) -> str:
         </body>
         </html>
         """
+
+
+def _compact_report_links(markdown_text: str) -> str:
+    """Hide long raw URLs while keeping every source clickable.
+
+    LLM/search evidence often arrives as ``标题（https://...）``.  PushPlus
+    renders that URL verbatim, which makes a narrow WeChat WebView almost
+    unreadable.  Protect normal Markdown links first, convert raw URLs to a
+    compact source pill, then restore the protected links.
+    """
+
+    protected_links: List[str] = []
+
+    def _protect_link(match: re.Match) -> str:
+        label = match.group(1).strip()
+        if label.lower().startswith(("http://", "https://")):
+            label = "查看来源 ↗"
+        protected_links.append(f"[{label}]({match.group(2)})")
+        return f"@@DSA_PUSHPLUS_LINK_{len(protected_links) - 1}@@"
+
+    compact = MARKDOWN_LINK_RE.sub(_protect_link, markdown_text or "")
+    compact = RAW_HTTP_URL_RE.sub(
+        lambda match: f"[查看来源 ↗]({match.group(0)})",
+        compact,
+    )
+    for index, link in enumerate(protected_links):
+        compact = compact.replace(f"@@DSA_PUSHPLUS_LINK_{index}@@", link)
+    return compact
+
+
+def _pushplus_highlight_strong(match: re.Match) -> str:
+    """Apply restrained semantic colour to bold report labels."""
+
+    inner = match.group(1)
+    plain = re.sub(r"<[^>]+>", "", inner).strip().lower()
+    style = "font-weight:700;color:#172033;"
+    if any(word in plain for word in ("风险", "警报", "缺失", "异常", "不可用", "止损")):
+        style += "background:#fff1f0;color:#b42318;padding:2px 5px;border-radius:4px;"
+    elif any(word in plain for word in ("买入", "加仓", "强势", "多头")):
+        style += "background:#fff1f0;color:#c4320a;padding:2px 5px;border-radius:4px;"
+    elif any(word in plain for word in ("减仓", "卖出", "回避", "空头")):
+        style += "background:#ecfdf3;color:#067647;padding:2px 5px;border-radius:4px;"
+    elif any(word in plain for word in ("结论", "核心", "策略", "计划", "重点", "建议")):
+        style += "background:#eef4ff;color:#174ea6;padding:2px 5px;border-radius:4px;"
+    elif any(word in plain for word in ("数据", "事实", "验证", "财报", "质量")):
+        style += "background:#ecfdf3;color:#067647;padding:2px 5px;border-radius:4px;"
+    elif any(word in plain for word in ("观察", "等待", "关注", "中性", "持有", "观望")):
+        style += "background:#fffaeb;color:#b54708;padding:2px 5px;border-radius:4px;"
+    return f'<strong style="{style}">{inner}</strong>'
+
+
+def markdown_to_pushplus_html(markdown_text: str) -> str:
+    """Render a compact, mobile-first HTML document for PushPlus/WeChat.
+
+    PushPlus' Markdown template uses browser defaults, producing oversized
+    headings and raw, line-wrapping URLs.  This renderer keeps the source
+    Markdown intact for other channels and supplies inline styles that survive
+    the sanitisation performed by PushPlus and mobile WeChat WebViews.
+    """
+
+    compact_markdown = _compact_report_links(markdown_text)
+    body = markdown2.markdown(
+        compact_markdown,
+        extras=["tables", "fenced-code-blocks", "break-on-newline", "cuddled-lists"],
+        safe_mode="escape",
+    )
+
+    tag_styles = {
+        "h1": (
+            "font-size:23px;line-height:1.35;margin:4px 0 18px;color:#101828;"
+            "font-weight:800;letter-spacing:-0.2px;"
+        ),
+        "h2": (
+            "font-size:19px;line-height:1.45;margin:22px 0 12px;padding:10px 12px;"
+            "color:#174ea6;background:#eef4ff;border-left:4px solid #3973e6;"
+            "border-radius:6px;font-weight:750;"
+        ),
+        "h3": (
+            "font-size:17px;line-height:1.5;margin:18px 0 9px;padding:9px 10px;"
+            "color:#24324a;background:#f8fafc;border-left:3px solid #98a2b3;"
+            "border-radius:5px;font-weight:750;"
+        ),
+        "p": "font-size:16px;line-height:1.82;margin:0 0 13px;color:#344054;",
+        "ul": "margin:7px 0 14px;padding-left:22px;color:#344054;",
+        "ol": "margin:7px 0 14px;padding-left:24px;color:#344054;",
+        "li": "font-size:16px;line-height:1.75;margin:5px 0;padding-left:2px;",
+        "blockquote": (
+            "margin:12px 0 16px;padding:12px 14px;background:#fffaeb;"
+            "border-left:4px solid #f5a524;border-radius:6px;color:#7a4b00;"
+        ),
+        "hr": "border:0;border-top:1px solid #e4e7ec;margin:22px 0;",
+        "table": (
+            "box-sizing:border-box;border-collapse:collapse;width:100%;max-width:100%;"
+            "table-layout:fixed;"
+            "font-size:13px;line-height:1.5;"
+        ),
+        "th": (
+            "box-sizing:border-box;border:1px solid #d0d5dd;padding:6px 5px;"
+            "background:#f2f4f7;color:#344054;text-align:left;font-weight:700;"
+            "word-break:break-word;overflow-wrap:anywhere;white-space:normal;"
+        ),
+        "td": (
+            "box-sizing:border-box;border:1px solid #e4e7ec;padding:6px 5px;"
+            "color:#475467;vertical-align:top;word-break:break-word;"
+            "overflow-wrap:anywhere;white-space:normal;"
+        ),
+        "a": (
+            "color:#175cd3;text-decoration:none;font-weight:650;"
+            "overflow-wrap:anywhere;"
+        ),
+        "code": (
+            "font-size:13px;background:#f2f4f7;color:#344054;padding:2px 4px;"
+            "border-radius:4px;overflow-wrap:anywhere;"
+        ),
+        "pre": (
+            "font-size:13px;line-height:1.55;background:#f8fafc;border:1px solid #e4e7ec;"
+            "padding:10px;overflow:auto;border-radius:6px;"
+        ),
+    }
+    for tag, style in tag_styles.items():
+        body = re.sub(
+            rf"<{tag}(?P<attrs>\s[^>]*)?>",
+            lambda match, tag=tag, style=style: (
+                f'<{tag}{match.group("attrs") or ""} style="{style}">'
+            ),
+            body,
+        )
+
+    body = re.sub(
+        r"<strong>(.*?)</strong>",
+        _pushplus_highlight_strong,
+        body,
+        flags=re.DOTALL,
+    )
+    body = re.sub(
+        r"(<table\b.*?</table>)",
+        (
+            '<div style="width:100%;overflow:hidden;margin:12px 0 18px;'
+            'border-radius:6px;">\\1</div>'
+        ),
+        body,
+        flags=re.DOTALL,
+    )
+
+    return (
+        '<div style="margin:0;background:#f3f5f8;padding:10px 0;">'
+        '<article style="box-sizing:border-box;max-width:760px;margin:0 auto;'
+        'padding:18px 16px 26px;background:#ffffff;color:#344054;border-radius:10px;'
+        'box-shadow:0 2px 10px rgba(16,24,40,0.06);'
+        'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,'
+        'Helvetica Neue,Arial,PingFang SC,Hiragino Sans GB,Microsoft YaHei,sans-serif;'
+        'word-break:break-word;-webkit-text-size-adjust:100%;">'
+        f"{body}"
+        '<div style="margin-top:24px;padding-top:12px;border-top:1px solid #e4e7ec;'
+        'font-size:12px;line-height:1.6;color:#98a2b3;">'
+        "数据与结论均应结合交易所公告及最新行情复核；数据不足时以风险控制优先。"
+        "</div></article></div>"
+    )
 
 
 def markdown_to_plain_text(markdown_text: str) -> str:

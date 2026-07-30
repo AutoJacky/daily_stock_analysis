@@ -1398,6 +1398,20 @@ class TestPushplusSender(unittest.TestCase):
         sender = PushplusSender(cfg)
         result = sender.send_to_pushplus("hello")
         self.assertTrue(result)
+        request = mock_post.call_args
+        self.assertEqual(request.args[0], "https://www.pushplus.plus/send")
+        self.assertEqual(request.kwargs["json"]["template"], "html")
+        self.assertIn("<article", request.kwargs["json"]["content"])
+        self.assertIn("自选股研报", request.kwargs["json"]["title"])
+
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    def test_market_review_plain_heading_uses_market_title(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 200})
+        sender = PushplusSender(_config(pushplus_token="TOKEN"))
+
+        self.assertTrue(sender.send_to_pushplus("🎯 大盘复盘\n\n## 指数表现\n\n上证指数"))
+
+        self.assertIn("收盘复盘", mock_post.call_args.kwargs["json"]["title"])
 
     @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
     @mock.patch("src.notification_sender.pushplus_sender.requests.post")
@@ -1410,6 +1424,75 @@ class TestPushplusSender(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertGreaterEqual(mock_post.call_count, 2)
+        for request in mock_post.call_args_list:
+            payload = request.kwargs["json"]
+            self.assertEqual(payload["template"], "html")
+            self.assertIn("<article", payload["content"])
+            self.assertLessEqual(
+                len(payload["content"].encode("utf-8")),
+                sender._pushplus_max_bytes,
+            )
+
+    @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    def test_chunking_preserves_markdown_source_link(self, mock_post, _mock_sleep):
+        mock_post.return_value = _response(200, {"code": 200})
+        url = "https://www.sse.com.cn/disclosure/example?report=20260730"
+        cfg = _config(pushplus_token="TOKEN")
+        cfg.pushplus_max_bytes = 3500
+        sender = PushplusSender(cfg)
+        content = (
+            "# 大盘复盘\n\n"
+            + ("盘面证据与风险核对。" * 180)
+            + f"\n\n[查看交易所公告]({url})\n\n"
+            + ("明日计划与失效条件。" * 180)
+        )
+
+        self.assertTrue(sender.send_to_pushplus(content))
+
+        rendered_pages = [
+            call.kwargs["json"]["content"] for call in mock_post.call_args_list
+        ]
+        self.assertEqual(sum(url in page for page in rendered_pages), 1)
+        self.assertFalse(any('href="#"' in page for page in rendered_pages))
+
+    @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    def test_retries_account_rate_validation_once(self, mock_post, mock_sleep):
+        mock_post.side_effect = [
+            _response(200, {"code": 500, "msg": "服务端验证错误"}),
+            _response(200, {"code": 200}),
+        ]
+        sender = PushplusSender(_config(pushplus_token="TOKEN"))
+
+        self.assertTrue(sender.send_to_pushplus("# 大盘复盘\n\n明日计划"))
+
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertTrue(
+            any(call.args and call.args[0] >= 60 for call in mock_sleep.call_args_list)
+        )
+
+    @mock.patch("src.notification_sender.pushplus_sender.time.monotonic", return_value=100.0)
+    @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    def test_market_review_survives_prior_five_request_budget(
+        self,
+        mock_post,
+        mock_sleep,
+        _mock_monotonic,
+    ):
+        mock_post.return_value = _response(200, {"code": 200})
+        sender = PushplusSender(_config(pushplus_token="TOKEN"))
+
+        for index in range(5):
+            self.assertTrue(sender.send_to_pushplus(f"# 个股摘要 {index}"))
+        self.assertTrue(sender.send_to_pushplus("🎯 大盘复盘\n\n## 明日计划"))
+
+        self.assertEqual(mock_post.call_count, 6)
+        self.assertTrue(
+            any(call.args and call.args[0] >= 60 for call in mock_sleep.call_args_list)
+        )
+        self.assertIn("收盘复盘", mock_post.call_args.kwargs["json"]["title"])
 
 
 class TestServerchan3Sender(unittest.TestCase):

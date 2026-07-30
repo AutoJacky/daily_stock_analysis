@@ -206,6 +206,7 @@ class _FakeRoutedNotifier:
                 NotificationChannel.EMAIL,
                 NotificationChannel.NTFY,
                 NotificationChannel.GOTIFY,
+                NotificationChannel.PUSHPLUS,
             ]
         )
         self.get_channels_for_route = MagicMock(return_value=list(routed_channels))
@@ -224,6 +225,7 @@ class _FakeRoutedNotifier:
             )
         )
         self.generate_brief_report = MagicMock(return_value="brief-report")
+        self.generate_pushplus_digest = MagicMock(return_value="pushplus-mobile-digest")
         self._send_wechat_image = MagicMock(return_value=True)
         self.send_to_wechat = MagicMock(return_value=True)
         self._send_telegram_photo = MagicMock(return_value=True)
@@ -232,6 +234,7 @@ class _FakeRoutedNotifier:
         self.send_to_email = MagicMock(return_value=True)
         self.send_to_ntfy = MagicMock(return_value=True)
         self.send_to_gotify = MagicMock(return_value=True)
+        self.send_to_pushplus = MagicMock(return_value=True)
 
     @staticmethod
     def _generate_dashboard_report(results):
@@ -239,6 +242,18 @@ class _FakeRoutedNotifier:
 
 
 class TestPipelineReportRouteFiltering(unittest.TestCase):
+    def test_pushplus_route_uses_mobile_digest_and_preserves_full_report(self):
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.notifier = _FakeRoutedNotifier([NotificationChannel.PUSHPLUS])
+        pipeline.config = SimpleNamespace(stock_email_groups=[])
+        results = [SimpleNamespace(code="000001")]
+
+        pipeline._send_notifications(results, ReportType.SIMPLE)
+
+        pipeline.notifier.generate_pushplus_digest.assert_called_once_with(results)
+        pipeline.notifier.send_to_pushplus.assert_called_once_with("pushplus-mobile-digest")
+        pipeline.notifier.generate_dashboard_report.assert_called_once_with(results)
+
     def test_send_notifications_applies_report_route_before_channel_iteration(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
         pipeline.notifier = _FakeRoutedNotifier([NotificationChannel.TELEGRAM])
@@ -255,6 +270,7 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
                 NotificationChannel.EMAIL,
                 NotificationChannel.NTFY,
                 NotificationChannel.GOTIFY,
+                NotificationChannel.PUSHPLUS,
             ],
         )
         pipeline.notifier.send_to_telegram.assert_called_once_with("report:000001")

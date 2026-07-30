@@ -17,6 +17,7 @@ A股自选股智能分析系统 - 通知层
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1804,7 +1805,9 @@ class NotificationService(
             lines.append(
                 f"**{signal_text}** | "
                 f"{labels['score_label']}:{result.sentiment_score} | "
-                f"{localize_trend_prediction(result.trend_prediction, report_language)}"
+                f"{localize_trend_prediction(result.trend_prediction, report_language)} | "
+                f"{'置信度' if report_language == 'zh' else 'Confidence'}:"
+                f"{getattr(result, 'confidence_level', 'N/A') or 'N/A'}"
             )
 
             # 操作理由（截断）
@@ -1822,6 +1825,25 @@ class NotificationService(
                 risk = result.risk_warning[:50] + "..." if len(result.risk_warning) > 50 else result.risk_warning
                 lines.append(f"⚠️ {risk}")
 
+            dashboard = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else {}
+            phase_decision = (
+                dashboard.get("phase_decision")
+                if isinstance(dashboard.get("phase_decision"), dict)
+                else {}
+            )
+            limitations = phase_decision.get("data_limitations")
+            if isinstance(limitations, list) and limitations:
+                limitation_text = "；".join(
+                    str(item).strip()
+                    for item in limitations[:2]
+                    if str(item).strip()
+                )
+                if limitation_text:
+                    if len(limitation_text) > 90:
+                        limitation_text = limitation_text[:90] + "..."
+                    limitation_label = "数据缺口" if report_language == "zh" else "Data gaps"
+                    lines.append(f"📎 **{limitation_label}：** {limitation_text}")
+
             lines.append("")
 
         # 底部（模型行在 --- 之前，Issue #528）
@@ -1837,6 +1859,211 @@ class NotificationService(
         content = "\n".join(lines)
 
         return content
+
+    def generate_pushplus_digest(
+        self,
+        results: List[AnalysisResult],
+        *,
+        requested_codes: Optional[List[str]] = None,
+        failed_items: Optional[List[Tuple[str, str]]] = None,
+    ) -> str:
+        """Generate a mobile decision digest while preserving the full report file.
+
+        A 30+ stock dashboard can exceed 100 KB and trigger eight or more
+        PushPlus requests.  The phone notification should be the actionable
+        index: decision, score, reason and risk for every stock.  The complete
+        evidence-rich report is still saved/uploaded by the normal report path.
+        """
+
+        report_date = datetime.now().strftime("%Y-%m-%d")
+        report_language = self._get_report_language(results)
+        requested_codes = list(requested_codes or [])
+        failed_items = list(failed_items or [])
+
+        def _limitations(result: AnalysisResult) -> List[str]:
+            dashboard = (
+                result.dashboard
+                if isinstance(getattr(result, "dashboard", None), dict)
+                else {}
+            )
+            phase_decision = (
+                dashboard.get("phase_decision")
+                if isinstance(dashboard.get("phase_decision"), dict)
+                else {}
+            )
+            values = phase_decision.get("data_limitations")
+            return [
+                str(item).strip()
+                for item in (values if isinstance(values, list) else [])
+                if str(item).strip()
+            ]
+
+        def _risk_rank(result: AnalysisResult) -> tuple:
+            decision = str(getattr(result, "decision_type", "") or "").lower()
+            advice = str(getattr(result, "operation_advice", "") or "")
+            defensive = decision == "sell" or any(
+                token in advice for token in ("卖", "减", "回避", "avoid", "sell")
+            )
+            return (
+                0 if defensive else 1,
+                0 if _limitations(result) else 1,
+                int(getattr(result, "sentiment_score", 50) or 50),
+            )
+
+        def _latest_verified_event(result: AnalysisResult) -> str:
+            dashboard = (
+                result.dashboard
+                if isinstance(getattr(result, "dashboard", None), dict)
+                else {}
+            )
+            intelligence = (
+                dashboard.get("intelligence")
+                if isinstance(dashboard.get("intelligence"), dict)
+                else {}
+            )
+            events = intelligence.get("verified_events")
+            if not isinstance(events, list):
+                return ""
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                published = str(event.get("published_date") or "").strip()
+                source = str(event.get("source") or "").strip()
+                title = str(event.get("title") or "").strip()
+                url = str(event.get("url") or "").strip()
+                if (
+                    published
+                    and source
+                    and title
+                    and url.lower().startswith(("https://", "http://"))
+                ):
+                    safe_title = title.replace("[", "［").replace("]", "］")
+                    safe_source = source.replace("[", "［").replace("]", "］")
+                    return (
+                        f"[{published}][{safe_source}] "
+                        f"[{safe_title}]({url})"
+                    )
+            return ""
+
+        risk_focus = sorted(results, key=_risk_rank)
+        opportunity_focus = sorted(
+            results,
+            key=lambda item: int(getattr(item, "sentiment_score", 0) or 0),
+            reverse=True,
+        )
+        focus: List[AnalysisResult] = []
+        for candidate in risk_focus[:3] + opportunity_focus:
+            if candidate not in focus:
+                focus.append(candidate)
+            if len(focus) >= min(5, len(results)):
+                break
+
+        buy_count, sell_count, hold_count = self._count_display_decisions(
+            results,
+            report_language,
+        )
+        requested_count = len(requested_codes) or len(results) + len(failed_items)
+        lines = [
+            f"# 📈 自选股决策摘要 · {report_date}",
+            "",
+            (
+                f"> 本轮请求 {requested_count} 只｜成功 {len(results)}｜"
+                f"失败 {len(failed_items)}｜买入候选 {buy_count}｜"
+                f"观察 {hold_count}｜防守 {sell_count}"
+            ),
+            "",
+            "> 阅读顺序：先看红色风险与失效条件，再看蓝色结论；数据缺失项不作为交易依据。",
+        ]
+        if focus:
+            lines.extend(["", "## 今晚优先核对", ""])
+        for result in focus:
+            signal_text, signal_emoji, _ = self._get_signal_level(result)
+            stock_name = self._get_display_name(result, report_language)
+            confidence = getattr(result, "confidence_level", None) or "N/A"
+            score = int(getattr(result, "sentiment_score", 0) or 0)
+            lines.extend(
+                [
+                    f"### {signal_emoji} {stock_name}（{result.code}）",
+                    "",
+                    f"**核心结论：** {signal_text}｜评分 {score}｜置信度 {confidence}",
+                ]
+            )
+            reason = str(
+                getattr(result, "buy_reason", None)
+                or getattr(result, "analysis_summary", None)
+                or ""
+            ).strip()
+            if reason:
+                lines.append(f"**决策依据：** {reason[:100]}{'…' if len(reason) > 100 else ''}")
+            risk = str(getattr(result, "risk_warning", None) or "").strip()
+            if risk:
+                lines.append(f"**风险警报：** {risk[:100]}{'…' if len(risk) > 100 else ''}")
+            limitations = _limitations(result)
+            if limitations:
+                data_gap = "；".join(limitations[:2])
+                lines.append(
+                    f"**数据缺口：** {data_gap[:110]}{'…' if len(data_gap) > 110 else ''}"
+                )
+            verified_event = _latest_verified_event(result)
+            if verified_event:
+                lines.append(f"**公司动态：** {verified_event}")
+            lines.append("")
+
+        if failed_items:
+            lines.extend(
+                [
+                    "## 未完成分析",
+                    "",
+                    "> 下列股票本轮未形成可用结论，不得把缺失结果理解为“中性”或“无风险”。",
+                    "",
+                ]
+            )
+            seen_failed = set()
+            for code, _reason in failed_items:
+                normalized_code = str(code or "").strip() or "未知代码"
+                if normalized_code in seen_failed:
+                    continue
+                seen_failed.add(normalized_code)
+                lines.append(f"- 🔴 **{normalized_code}**｜数据或模型链路失败，等待下轮重试")
+            lines.append("")
+
+        lines.extend(["## 全部成功股票速览", ""])
+        for result in sorted(
+            results,
+            key=lambda item: int(getattr(item, "sentiment_score", 0) or 0),
+            reverse=True,
+        ):
+            signal_text, signal_emoji, _ = self._get_signal_level(result)
+            stock_name = self._get_display_name(result, report_language)
+            confidence = getattr(result, "confidence_level", None) or "N/A"
+            gap_marker = "｜🟠 数据不足" if _limitations(result) else ""
+            lines.append(
+                f"- {signal_emoji} **{stock_name}（{result.code}）**｜{signal_text}｜"
+                f"{int(getattr(result, 'sentiment_score', 0) or 0)} 分｜"
+                f"置信度 {confidence}{gap_marker}"
+            )
+
+        lines.extend(
+            [
+                "",
+                "> 完整深度版（财报、公告、技术结构与证据链）继续保存在本次云端运行附件中。",
+            ]
+        )
+
+        repository = (os.getenv("GITHUB_REPOSITORY") or "").strip()
+        run_id = (os.getenv("GITHUB_RUN_ID") or "").strip()
+        server_url = (os.getenv("GITHUB_SERVER_URL") or "https://github.com").rstrip("/")
+        if repository and run_id:
+            lines.extend(
+                [
+                    "",
+                    (
+                        f"[查看本次完整研报与运行附件 ↗]"
+                        f"({server_url}/{repository}/actions/runs/{run_id})"
+                    ),
+                ]
+            )
+        return "\n".join(lines)
 
     def generate_brief_report(
         self,

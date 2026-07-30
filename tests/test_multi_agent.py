@@ -2651,6 +2651,51 @@ class TestAgentMemory(unittest.TestCase):
         self.assertEqual(history[0].signal, "buy")
         self.assertEqual(history[0].price_at_analysis, 1880.0)
 
+    def test_skill_without_tagged_history_falls_back_to_stock_and_never_boosts(self):
+        from src.agent.memory import AgentMemory
+
+        service = MagicMock()
+        service.get_skill_summary.return_value = None
+        service.get_stock_summary.return_value = {
+            "total_evaluations": 40,
+            "win_rate": 0.80,
+            "direction_accuracy": 0.80,
+        }
+
+        with patch(
+            "src.services.backtest_service.BacktestService",
+            return_value=service,
+        ):
+            calibration = AgentMemory(enabled=True).get_calibration(
+                "strategy_chan_theory",
+                stock_code="600519",
+                skill_id="chan_theory",
+            )
+
+        self.assertTrue(calibration.calibrated)
+        self.assertEqual(calibration.total_samples, 40)
+        self.assertEqual(calibration.calibration_factor, 1.0)
+        service.get_stock_summary.assert_called_once_with("600519")
+
+    def test_objective_history_can_only_reduce_confidence(self):
+        from src.agent.memory import AgentMemory
+
+        memory = AgentMemory(enabled=True)
+        with patch.object(
+            memory,
+            "_get_accuracy_stats",
+            return_value={
+                "total": 40,
+                "accuracy": 0.25,
+                "direction_accuracy": 0.25,
+                "avg_confidence": 0.5,
+            },
+        ):
+            calibration = memory.get_calibration("technical")
+
+        self.assertTrue(calibration.calibrated)
+        self.assertEqual(calibration.calibration_factor, 0.5)
+
 
 class TestBaseAgentMemoryIntegration(unittest.TestCase):
     """Test BaseAgent hooks for memory injection and calibration."""

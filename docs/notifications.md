@@ -1,6 +1,6 @@
 # 通知能力基线
 
-本文档记录通知能力 P0-P7 终态：渠道、配置 key、GitHub Actions 映射、Web 设置元数据、CLI 诊断口径、Web 一键测试、自定义 Webhook Body 模板语义、通知路由策略、降噪机制、聚合报告失败隔离、ntfy / Gotify 一等渠道、WebPush / Apprise 评估，以及本地 / Docker / GitHub Actions / Desktop 场景化配置说明。P0 只做基线与只读诊断；P1 增加 Web 单渠道真实测试；P2 产品化现有 Body 模板；P3 增加 report / alert / system_error 路由；P4 增加进程内降噪；P5 强化测试诊断和聚合报告逐渠道失败隔离；P6-A 新增 ntfy；P6-C 新增 Gotify；P6-D 只评估 WebPush / Apprise；P7 收口文档与 Actions env 对照表自动化，不新增运行时依赖、配置入口、per-URL 模板、跨进程持久化、真实每日摘要或重试循环。
+本文档记录通知能力 P0-P7 终态及后续 PushPlus 手机报告增强：渠道、配置 key、GitHub Actions 映射、Web 设置元数据、CLI 诊断口径、Web 一键测试、自定义 Webhook Body 模板语义、通知路由策略、降噪机制、聚合报告失败隔离、ntfy / Gotify 一等渠道、WebPush / Apprise 评估，以及本地 / Docker / GitHub Actions / Desktop 场景化配置说明。P0 只做基线与只读诊断；P1 增加 Web 单渠道真实测试；P2 产品化现有 Body 模板；P3 增加 report / alert / system_error 路由；P4 增加进程内降噪；P5 强化测试诊断和聚合报告逐渠道失败隔离；P6-A 新增 ntfy；P6-C 新增 Gotify；P6-D 只评估 WebPush / Apprise；P7 收口文档与 Actions env 对照表自动化。PushPlus 手机摘要、HTML 渲染和配额保护属于后续定向增强，不改变其他渠道的既有报告契约。
 
 ## 渠道基线
 
@@ -41,9 +41,20 @@ Discord 长报告发送复用现有分片链路：单条 `content` 运行时不�
 
 ## 报告渲染与分片
 
-当前默认推送报告的入口、内容来源和整体版式保持不变。本阶段只收敛通知渲染的技术路线：沉淀渠道能力画像、发送前消息结构和结构感知分片能力，避免后续按渠道扩展时继续在各 sender 中堆叠平行逻辑。
+除 PushPlus 外，当前默认推送报告的入口、内容来源和整体版式保持不变。本阶段只收敛通知渲染的技术路线：沉淀渠道能力画像、发送前消息结构和结构感知分片能力，避免后续按渠道扩展时继续在各 sender 中堆叠平行逻辑。
 
 默认发送路径沿用既有 sender 行为，不接入新增 renderer：飞书和 Telegram 继续使用原有兼容转换，企业微信、Slack 继续使用原有分片逻辑，避免改变线上可见报告版式。新增的渠道能力画像、PreparedMessage、renderer preset 和结构感知分片仅作为后续扩展基础；如需启用企业微信、飞书、Telegram、Slack 等渠道专用 renderer，应通过显式配置、真实发送验证和回归测试逐步接入。
+
+### PushPlus 手机报告
+
+PushPlus 是本节的明确例外：
+
+- 默认非合并完整分析先推送大盘复盘，再运行自选股分析，避免 30+ 只股票的长报告占满配额后让大盘缺席；报告生成成功但通知返回失败时不会误记为送达，会在后续流程重试。
+- 聚合个股不再把 100KB 以上的完整 Markdown 直接拆成多条微信文章；手机端改为“5 只重点卡片 + 全部成功/失败股票速览”，34 只股票回归预算最多两条。分析失败的代码会明确列出，不再被静默当成中性；重点股票附带日期、来源及可点击的已核验公司动态。完整财报、公告、技术结构和证据链仍保存到 `reports/` 并由 Actions artifact 上传。
+- PushPlus API 使用 HTTPS 和 `html` 模板。正文为 16px、卡片式行内样式；买入/风险/观察/数据缺口使用不同色块，表格在手机宽度内自适应换行。
+- 来源 URL 只保留在安全的 HTTP(S) `href` 中，手机正文显示新闻标题或“查看来源 ↗”，不再展示撑满屏幕的裸链接。
+- 大盘、模型复核和自选股分别使用“收盘复盘”“每日模型复核”“自选股研报”短标题。
+- 发送器在同一个通知服务实例内共享五次/分钟滚动窗口；长报告的后续分页或紧随其后的消息会等待额度释放。若账户被其他进程占用额度或服务端仍返回限流/验证错误，会等待窗口后再重试一次。
 
 兼容性排除说明：
 - 本轮未改动 `src/notification_sender/wechat_sender.py`、`src/notification_sender/slack_sender.py`、`src/notification_sender/telegram_sender.py` 的发送路径；`src/notification_sender/feishu_sender.py` 新增 `send_feishu_file()` 文件发送路径，Webhook 模式回退为发送文件内容文本，App Bot 文字发送路径（`send_to_feishu` → `_send_via_app_bot`）保持不变。

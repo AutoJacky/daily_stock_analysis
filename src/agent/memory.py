@@ -169,16 +169,14 @@ class AgentMemory:
 
             if result.total_samples >= self.min_samples:
                 result.calibrated = True
-                # Calibration: scale confidence towards historical accuracy
-                # If agent is overconfident: factor < 1
-                # If agent is underconfident: factor > 1
-                if result.avg_confidence > 0:
-                    result.calibration_factor = min(
-                        1.5,
-                        max(0.5, result.historical_accuracy / result.avg_confidence),
-                    )
-                else:
-                    result.calibration_factor = 1.0
+                # Backtest history currently has directional outcomes but no
+                # trustworthy probability forecast for every Agent opinion.
+                # Therefore calibration may only reduce confidence; it must not
+                # manufacture an "under-confident" boost from a guessed baseline.
+                result.calibration_factor = min(
+                    1.0,
+                    max(0.5, result.historical_accuracy / 0.5),
+                )
             else:
                 result.calibrated = False
                 result.calibration_factor = 1.0
@@ -294,6 +292,12 @@ class AgentMemory:
 
             if skill_id:
                 summary = service.get_skill_summary(skill_id)
+                # Skill-tagged backtest rows are not available yet. Falling back
+                # to the same stock's objective history keeps calibration real
+                # and conservative instead of leaving every Agent permanently
+                # uncalibrated or fabricating skill-level accuracy.
+                if summary is None and stock_code:
+                    summary = service.get_stock_summary(stock_code)
             elif stock_code:
                 summary = service.get_stock_summary(stock_code)
             else:
@@ -305,7 +309,7 @@ class AgentMemory:
                     "total": summary.get("total_evaluations", 0),
                     "accuracy": summary.get("win_rate", 0.5),
                     "direction_accuracy": summary.get("direction_accuracy", 0.5),
-                    "avg_confidence": 0.6,  # approximate from historical data
+                    "avg_confidence": 0.5,
                 }
         except Exception:
             pass

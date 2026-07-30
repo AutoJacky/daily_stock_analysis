@@ -3203,6 +3203,7 @@ class StockAnalysisPipeline:
             )
         
         results: List[AnalysisResult] = []
+        failed_items: List[Tuple[str, str]] = []
         
         # 使用线程池并发处理
         # 注意：max_workers 设置较低（默认3）以避免触发反爬
@@ -3235,6 +3236,9 @@ class StockAnalysisPipeline:
                                 fallback_code=code,
                             )
                     elif result and not result.success:
+                        failed_items.append(
+                            (code, str(result.error_message or "未知原因"))
+                        )
                         logger.warning(
                             f"[{code}] 分析结果标记为失败，不计入汇总: "
                             f"{result.error_message or '未知原因'}"
@@ -3250,6 +3254,7 @@ class StockAnalysisPipeline:
                         time.sleep(analysis_delay)
 
                 except Exception as e:
+                    failed_items.append((code, str(e)))
                     logger.error(f"[{code}] 任务执行失败: {e}")
         
         # 统计
@@ -3281,17 +3286,29 @@ class StockAnalysisPipeline:
             self._save_local_report(results, report_type)
 
         # 发送通知（单股推送模式下跳过汇总推送，避免重复）
-        if results and send_notification and not dry_run:
+        if (results or failed_items) and send_notification and not dry_run:
             if single_stock_notify:
                 # 单股推送模式：只保存汇总报告，不再重复推送
                 logger.info("单股推送模式：跳过汇总推送，仅保存报告到本地")
                 self._send_notifications(results, report_type, skip_push=True)
+                if failed_items:
+                    self._send_notifications(
+                        [],
+                        report_type,
+                        requested_codes=[code for code, _ in failed_items],
+                        failed_items=failed_items,
+                    )
             elif merge_notification:
                 # 合并模式（Issue #190）：仅保存，不推送，由 main 层合并个股+大盘后统一发送
                 logger.info("合并推送模式：跳过本次推送，将在个股+大盘复盘后统一发送")
                 self._send_notifications(results, report_type, skip_push=True)
             else:
-                self._send_notifications(results, report_type)
+                self._send_notifications(
+                    results,
+                    report_type,
+                    requested_codes=list(stock_codes),
+                    failed_items=failed_items,
+                )
         
         return results
 
@@ -3408,6 +3425,8 @@ class StockAnalysisPipeline:
         results: List[AnalysisResult],
         report_type: ReportType = ReportType.SIMPLE,
         skip_push: bool = False,
+        requested_codes: Optional[List[str]] = None,
+        failed_items: Optional[List[Tuple[str, str]]] = None,
     ) -> None:
         """
         发送分析结果通知
@@ -3422,7 +3441,14 @@ class StockAnalysisPipeline:
         noise_finalized = False
         try:
             logger.info("生成决策仪表盘日报...")
-            report = self._generate_aggregate_report(results, report_type)
+            if results:
+                report = self._generate_aggregate_report(results, report_type)
+            else:
+                report = self.notifier.generate_pushplus_digest(
+                    [],
+                    requested_codes=requested_codes,
+                    failed_items=failed_items,
+                )
             
             # 跳过推送（单股推送模式 / 合并模式：报告已由 _save_local_report 保存）
             if skip_push:
@@ -3511,7 +3537,16 @@ class StockAnalysisPipeline:
                 if channels and hasattr(self.notifier, "evaluate_noise_control"):
                     report_type_key = report_type.value if isinstance(report_type, ReportType) else str(report_type)
                     codes_key = ",".join(
-                        sorted(str(getattr(result, "code", "") or "") for result in results)
+                        sorted(
+                            str(code or "")
+                            for code in (
+                                [
+                                    getattr(result, "code", "")
+                                    for result in results
+                                ]
+                                or list(requested_codes or [])
+                            )
+                        )
                     )
                     noise_key = f"report:aggregate:{report_type_key}:{codes_key}"
                     noise_decision = self.notifier.evaluate_noise_control(
@@ -3759,9 +3794,21 @@ class StockAnalysisPipeline:
                             channel_error,
                         )
                     elif channel == NotificationChannel.PUSHPLUS:
+                        if requested_codes is None and failed_items is None:
+                            pushplus_digest = self.notifier.generate_pushplus_digest(results)
+                        else:
+                            pushplus_digest = self.notifier.generate_pushplus_digest(
+                                results,
+                                requested_codes=requested_codes,
+                                failed_items=failed_items,
+                            )
+                        logger.info(
+                            "PushPlus 使用手机决策摘要：%d 字符（完整报告已保留到本地文件）",
+                            len(pushplus_digest),
+                        )
                         channel_success, channel_error = _send_channel_safely(
                             channel.value,
-                            lambda: self.notifier.send_to_pushplus(report),
+                            lambda: self.notifier.send_to_pushplus(pushplus_digest),
                         )
                         non_wechat_success = channel_success or non_wechat_success
                         _record_channel_result(

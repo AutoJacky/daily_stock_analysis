@@ -1359,9 +1359,13 @@ Set the following variables in `.env` (all optional, have defaults):
 | `BACKTEST_ENGINE_VERSION` | `v1` | Engine version, used to distinguish results when logic is updated |
 | `BACKTEST_NEUTRAL_BAND_PCT` | `2.0` | Neutral band threshold (%), ±2% treated as range-bound |
 
-### Auto-run
+### Auto-run and daily calibration loop
 
-Backtesting triggers automatically after the daily analysis flow completes (non-blocking; failures do not affect notifications). It can also be triggered manually via API.
+For a full daily run, the market recap and stock decision digest are sent first, followed by one objective history-evaluation pass. Outcomes produced or becoming mature today are persisted for the next scheduled analysis. This keeps historical computation from delaying the time-critical close reports, and failures remain non-blocking.
+
+In addition to the default 10-day backtest window, the daily job evaluates persisted DecisionSignals over 1/3/5/10 trading-day horizons. Outcomes are computed from subsequent market bars; the LLM never grades itself. Fewer than 30 completed samples per stock remain observation-only. Once that threshold is reached, objective history may reduce confidence but can never boost it automatically. Missing market, filing, or financial evidence continues to cap confidence.
+
+Because GitHub-hosted runners are ephemeral, the bundled daily workflow restores and saves `data/stock_analysis.db` through Actions cache and enables `AGENT_MEMORY_ENABLED=true`. Scheduled production runs and manual acceptance runs use isolated cache namespaces; only a scheduled run with a passing SQLite integrity check is persisted, preventing one-stock test runs from contaminating production evidence. This loop only calibrates confidence conservatively; it does not promise returns or a fixed hit rate. Backtests can still be triggered manually through the API.
 
 ### Evaluation Metrics
 

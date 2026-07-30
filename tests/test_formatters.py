@@ -16,6 +16,7 @@ from src.formatters import (
     format_slack_mrkdwn,
     format_telegram_markdown,
     format_wechat_markdown,
+    markdown_to_pushplus_html,
     markdown_tables_to_key_value_rows,
     slice_at_max_bytes,
     TRUNCATION_SUFFIX,
@@ -25,6 +26,41 @@ from src.formatters import (
     _chunk_by_max_words,
     utf16_len,
 )
+
+
+class TestPushplusMobileHtml(unittest.TestCase):
+    def test_uses_mobile_typography_and_semantic_highlights(self):
+        html = markdown_to_pushplus_html(
+            "# 📈 股票分析\n\n## 核心结论\n\n"
+            "**风险警报：** 数据缺失\n\n**买入：** 等待确认\n\n"
+            "**观望：** 不追高\n\n**减仓：** 跌破止损\n\n"
+            "| 指数 | 涨跌 |\n|---|---|\n| 上证 | +0.5% |"
+        )
+
+        self.assertIn("font-size:23px", html)
+        self.assertIn("border-left:4px solid #3973e6", html)
+        self.assertIn("background:#fff1f0", html)
+        self.assertIn("color:#c4320a", html)
+        self.assertIn("color:#b54708", html)
+        self.assertIn("color:#067647", html)
+        self.assertIn("-webkit-text-size-adjust:100%", html)
+        self.assertIn("table-layout:fixed", html)
+        self.assertNotIn("min-width:520px", html)
+
+    def test_compacts_raw_source_urls_without_losing_click_target(self):
+        url = "https://finance.example.com/a/very/long/source/url"
+        html = markdown_to_pushplus_html(f"最新动态：标题 ({url})")
+
+        self.assertIn(f'href="{url}"', html)
+        self.assertNotIn(f'href="{url})"', html)
+        self.assertIn("查看来源 ↗", html)
+        self.assertEqual(html.count(url), 1)
+
+    def test_escapes_untrusted_raw_html(self):
+        html = markdown_to_pushplus_html("<script>alert('x')</script>")
+
+        self.assertNotIn("<script>", html)
+        self.assertIn("&lt;script&gt;", html)
 
 
 class TestChunkContentByMaxWords(unittest.TestCase):

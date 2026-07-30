@@ -17,11 +17,44 @@ from src.analyzer import (
     _BULLISH_TREND_HINTS,
     _contains_trend_hint,
     _infer_trend_direction,
+    _apply_verified_event_evidence,
     _sanitize_trend_analysis_for_prompt,
 )
 
 
 class AnalyzerNewsPromptTestCase(unittest.TestCase):
+    def test_verified_events_keep_structured_source_and_hide_raw_url(self) -> None:
+        intelligence = {}
+        url = "https://www.sse.com.cn/disclosure/example"
+
+        _apply_verified_event_evidence(
+            intelligence,
+            [
+                {
+                    "published_date": "2026-07-30",
+                    "source": "上交所",
+                    "title": "公司发布回购公告",
+                    "url": url,
+                    "direct_in_title": True,
+                }
+            ],
+        )
+
+        self.assertIn("公司发布回购公告", intelligence["latest_news"])
+        self.assertIn(f"[查看来源 ↗]({url})", intelligence["latest_news"])
+        self.assertNotIn(f"（{url}）", intelligence["latest_news"])
+        self.assertEqual(
+            intelligence["verified_events"],
+            [
+                {
+                    "published_date": "2026-07-30",
+                    "source": "上交所",
+                    "title": "公司发布回购公告",
+                    "url": url,
+                }
+            ],
+        )
+
     def test_contains_trend_hint_treats_non_adjacent_negation_as_negated(self) -> None:
         self.assertFalse(_contains_trend_hint("尚未形成上升趋势，继续观察。", _BULLISH_TREND_HINTS))
         self.assertFalse(_contains_trend_hint("未形成上升趋势，继续观察。", _BULLISH_TREND_HINTS))

@@ -656,6 +656,25 @@ def _market_review_report_text(review_result: Any) -> str:
     return review_result if isinstance(review_result, str) else ""
 
 
+def _market_review_delivery_succeeded(
+    review_result: Any,
+    *,
+    notification_required: bool,
+) -> bool:
+    """Distinguish report generation from a failed notification delivery."""
+
+    if not review_result:
+        return False
+    if not notification_required:
+        return True
+    result_attributes = getattr(review_result, "__dict__", {})
+    if "notification_success" in result_attributes:
+        return result_attributes.get("notification_success") is True
+    # Compatibility for tests and integrations returning the legacy string or
+    # a report-only object. Production calls request the structured result.
+    return True
+
+
 def _save_reused_market_review_report(
     notifier: Any,
     market_report: str,
@@ -689,14 +708,23 @@ def _save_reused_market_review_report(
         logger.warning("复用大盘上下文保存大盘复盘报告失败: %s", exc)
 
 
-def _run_auto_backtest(config: Config) -> None:
-    """Run the independently configured auto-backtest without failing analysis."""
+def _run_auto_backtest(config: Config) -> str:
+    """Run the daily evidence-feedback loop without failing live analysis.
+
+    The legacy backtest evaluates analysis history over a longer window.  The
+    signal outcome sidecar adds 1/3/5/10-trading-day checks so recent calls are
+    also audited.  Both are deterministic comparisons against persisted market
+    bars; no LLM is allowed to grade its own prediction.
+    """
 
     try:
         if not getattr(config, 'backtest_enabled', False):
-            return
+            return ""
 
         from src.services.backtest_service import BacktestService
+        from src.services.decision_signal_outcome_service import (
+            DecisionSignalOutcomeService,
+        )
 
         logger.info("开始自动回测...")
         service = BacktestService()
@@ -711,8 +739,92 @@ def _run_auto_backtest(config: Config) -> None:
             f"saved={stats.get('saved')} completed={stats.get('completed')} "
             f"insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
         )
+        learning_summary = service.get_global_summary()
+        if not isinstance(learning_summary, dict):
+            learning_summary = {}
+        calibration_samples = int(
+            learning_summary.get("total_evaluations") or 0
+        )
+        calibration_accuracy = learning_summary.get("direction_accuracy")
+        if calibration_accuracy is None:
+            calibration_accuracy = learning_summary.get("win_rate")
+        try:
+            calibration_accuracy_value = float(calibration_accuracy)
+        except (TypeError, ValueError):
+            calibration_accuracy_text = "样本不足"
+        else:
+            if calibration_accuracy_value <= 1:
+                calibration_accuracy_value *= 100
+            calibration_accuracy_text = f"{calibration_accuracy_value:.1f}%"
+
+        outcome_service = DecisionSignalOutcomeService()
+        outcome_run = outcome_service.run_outcomes(
+            horizons=["1d", "3d", "5d", "10d"],
+            force=False,
+            limit=500,
+        )
+        outcome_stats = outcome_service.get_stats(
+            horizons=["1d", "3d", "5d", "10d"],
+        )
+        logger.info(
+            "信号后验复核完成: evaluated=%s completed=%s hit=%s miss=%s unable=%s",
+            outcome_run.get("evaluated"),
+            outcome_stats.get("completed"),
+            outcome_stats.get("hit"),
+            outcome_stats.get("miss"),
+            outcome_stats.get("unable"),
+        )
+
+        completed = int(outcome_stats.get("completed") or 0)
+        total = int(outcome_stats.get("total") or 0)
+        unable = int(outcome_stats.get("unable") or 0)
+        hit_rate = outcome_stats.get("hit_rate_pct")
+        hit_rate_text = (
+            f"{float(hit_rate):.1f}%"
+            if hit_rate is not None
+            else "样本不足"
+        )
+        sample_status = (
+            "已达到多周期统计观察门槛"
+            if completed >= 30
+            else f"仍在积累（至少 30 个已完成评估项，当前 {completed}）"
+        )
+        memory_status = (
+            "已启用；仅依据客观后验下调/校准置信度，逐股票检查，"
+            "绝不自动上调；具体股票少于 30 个完成样本时不生效"
+            if getattr(config, "agent_memory_enabled", False)
+            else "未启用；本轮只记录结果，不改动置信度"
+        )
+        return "\n".join(
+            [
+                "# 🧭 每日预测复核与校准",
+                "",
+                "> 使用真实后续行情核对旧结论；模型不参与给自己打分。",
+                "",
+                "## 今日复核",
+                "",
+                (
+                    f"- **后验评估项（信号×周期）：** 总计 {total}，"
+                    f"已完成 {completed}，暂不可评估 {unable}"
+                ),
+                f"- **方向命中率：** {hit_rate_text}（中性样本不计入命中/未命中分母）",
+                f"- **可信门槛：** {sample_status}",
+                (
+                    f"- **历史校准池：** 全局参考 {calibration_samples} 个完成样本，"
+                    f"方向准确率 {calibration_accuracy_text}；实际调整仍按逐股票门槛判定"
+                ),
+                "",
+                "## 自动修正规则",
+                "",
+                f"- **置信度校准：** {memory_status}",
+                "- **数据缺失：** 行情、财报或公告证据不足时，强制降级为观察，不生成确定性买卖结论。",
+                "- **防过拟合：** 少于 30 个完成样本不调整；达到门槛后也只允许降低置信度。",
+                "- **多周期复核：** 同时检查 1/3/5/10 个交易日，避免只挑有利周期。",
+            ]
+        )
     except Exception as exc:
         logger.warning(f"自动回测失败（已忽略）: {exc}")
+        return ""
 
 
 def run_full_analysis(
@@ -826,11 +938,19 @@ def run_full_analysis(
         market_context_summary = ""
         market_context_full_report = ""
         market_context_generated_during_stock = False
+        workflow_trigger_source = (
+            os.getenv("DSA_TRIGGER_SOURCE", "").strip().lower()
+        )
+        query_source = (
+            workflow_trigger_source
+            if workflow_trigger_source in {"schedule", "manual"}
+            else "cli"
+        )
         pipeline = StockAnalysisPipeline(
             config=config,
             max_workers=args.workers,
             query_id=query_id,
-            query_source="cli",
+            query_source=query_source,
             save_context_snapshot=save_context_snapshot,
             daily_market_context_enabled=should_use_daily_market_context,
             daily_market_context_allow_generate=should_use_daily_market_context,
@@ -861,6 +981,68 @@ def run_full_analysis(
                 require_current_query_match=True,
             )
 
+        # 大盘复盘优先：30+ 只股票可能需要较长时间，且 PushPlus 有严格的
+        # 每分钟请求配额。非合并模式先生成并推送大盘，避免个股长报告占满
+        # 配额或任务超时后让最重要的收盘复盘缺席。
+        market_review_completed_before_stocks = False
+        if should_run_market_review and not merge_notification:
+            schedule_mode = bool(
+                getattr(args, 'schedule', False)
+                or getattr(config, 'schedule_enabled', False)
+            )
+            review_trigger_source = (
+                "schedule"
+                if schedule_mode or query_source == "schedule"
+                else query_source
+            )
+            logger.info("优先执行大盘复盘，完成后再分析自选股。")
+            early_review_result = _run_market_review_with_shared_lock(
+                config,
+                run_market_review,
+                notifier=pipeline.notifier,
+                analyzer=pipeline.analyzer,
+                search_service=pipeline.search_service,
+                send_notification=not args.no_notify,
+                merge_notification=False,
+                override_region=market_review_region,
+                query_id=query_id,
+                trigger_source=review_trigger_source,
+                return_structured=True,
+            )
+            if early_review_result:
+                market_report = _market_review_report_text(early_review_result)
+                notification_required = (
+                    not args.no_notify
+                    and pipeline.notifier.is_available()
+                )
+                market_review_completed_before_stocks = (
+                    bool(market_report)
+                    and _market_review_delivery_succeeded(
+                        early_review_result,
+                        notification_required=notification_required,
+                    )
+                )
+                if should_use_daily_market_context and not market_context_summary:
+                    (
+                        market_context_summary,
+                        market_context_full_report,
+                    ) = _prime_daily_market_context(
+                        config,
+                        pipeline=pipeline,
+                        region=market_review_region,
+                        no_market_review=args.no_market_review,
+                        allow_generate=False,
+                        target_date=daily_market_context_target_date,
+                        return_full_report=True,
+                        require_current_query_match=True,
+                    )
+                if not market_review_completed_before_stocks:
+                    logger.warning(
+                        "大盘复盘已生成但推送未确认成功，将在个股分析后自动重试。"
+                    )
+            else:
+                logger.warning("优先大盘复盘未成功，将在个股分析后自动重试。")
+
         # 1. 运行个股分析
         if skip_futu_stock_analysis:
             if portfolio_is_empty:
@@ -877,7 +1059,11 @@ def run_full_analysis(
                 current_time=analysis_reference_time,
             )
 
-        if should_use_daily_market_context and not market_context_summary:
+        if (
+            should_use_daily_market_context
+            and not market_context_summary
+            and not market_review_completed_before_stocks
+        ):
             (
                 market_context_summary,
                 market_context_full_report,
@@ -897,12 +1083,16 @@ def run_full_analysis(
         analysis_delay = getattr(config, 'analysis_delay', 0)
 
         # 2. 运行大盘复盘（如果启用且不是仅个股模式）
-        if should_run_market_review:
+        if should_run_market_review and not market_review_completed_before_stocks:
             schedule_mode = bool(
                 getattr(args, 'schedule', False)
                 or getattr(config, 'schedule_enabled', False)
             )
-            review_trigger_source = "schedule" if schedule_mode else "cli"
+            review_trigger_source = (
+                "schedule"
+                if schedule_mode or query_source == "schedule"
+                else query_source
+            )
             can_reuse_market_context = (
                 _can_reuse_market_context_for_review(
                     market_context_summary,
@@ -1063,8 +1253,24 @@ def run_full_analysis(
         except Exception as e:
             logger.error(f"飞书文档生成失败: {e}")
 
-        # === Auto backtest ===
-        _run_auto_backtest(config)
+        # === Daily objective feedback loop ===
+        # Keep the time-critical market and stock reports ahead of historical
+        # evaluation. The persisted calibration from prior scheduled runs is
+        # already available to this batch; today's outcomes feed the next run.
+        learning_review = _run_auto_backtest(config)
+        if (
+            learning_review
+            and not args.no_notify
+            and pipeline.notifier.is_available()
+        ):
+            if pipeline.notifier.send(
+                learning_review,
+                email_send_to_all=True,
+                route_type="report",
+            ):
+                logger.info("每日预测复核与校准摘要推送成功")
+            else:
+                logger.warning("每日预测复核与校准摘要推送失败")
 
         return True
 

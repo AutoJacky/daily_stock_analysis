@@ -53,6 +53,8 @@ class MarketReviewRunResult:
 
     report: str
     market_review_payload: Dict[str, Any] = field(default_factory=dict)
+    notification_attempted: bool = False
+    notification_success: Optional[bool] = None
 
 
 def _refresh_market_review_history_diagnostics(*, query_id: str) -> None:
@@ -207,6 +209,8 @@ def run_market_review(
     runtime_config = config or get_config()
     history_query_id = query_id or f"market_review_{uuid.uuid4().hex}"
     review_text = _get_market_review_text(getattr(runtime_config, "report_language", "zh"))
+    notification_attempted = False
+    notification_success: Optional[bool] = None
     raw_region = (
         override_region
         if override_region is not None
@@ -365,7 +369,9 @@ def run_market_review(
                     wrapper_title=review_text["push_title"],
                 )
 
+                notification_attempted = True
                 success = notifier.send(report_content, email_send_to_all=True, route_type="report")
+                notification_success = bool(success)
                 _record_market_review_notification_run(
                     query_id=history_query_id,
                     channel="report",
@@ -423,6 +429,8 @@ def run_market_review(
                 return MarketReviewRunResult(
                     report=review_report,
                     market_review_payload=market_review_payload,
+                    notification_attempted=notification_attempted,
+                    notification_success=notification_success,
                 )
             if merge_notification:
                 return merge_markdown_report
