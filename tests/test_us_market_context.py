@@ -278,6 +278,25 @@ def test_us_quality_requires_same_trade_date_and_all_core_layers():
     assert quality["macro_available"] is True
 
 
+def test_us_review_is_always_deterministic_and_does_not_allow_llm_fact_rewrites():
+    analyzer = _us_analyzer()
+    analyzer.analyzer = MagicMock()
+    analyzer.analyzer.is_available.return_value = True
+    analyzer.analyzer.generate_text.return_value = (
+        "微软财报超预期，制造业PMI改善，标普关注7450点压力。"
+    )
+
+    report = analyzer.generate_market_review(_overview(), [])
+
+    analyzer.analyzer.generate_text.assert_not_called()
+    assert "美股大盘复盘（严格数据版）" in report
+    assert "本次未取得带来源的有效新闻" in report
+    assert "微软财报" not in report
+    assert "PMI" not in report
+    assert "7450" not in report
+    assert "官方来源：FRED" in report
+
+
 def test_us_quality_fails_closed_when_etf_date_does_not_match_indices():
     analyzer = _us_analyzer()
     context = _complete_context(as_of="2026-07-29")

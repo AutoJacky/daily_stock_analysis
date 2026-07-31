@@ -955,6 +955,14 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             )
             return self._generate_data_unavailable_review(overview, quality)
 
+        if self.region == "us":
+            logger.info(
+                "[大盘] %s action=generate_review status=deterministic "
+                "reason=us_verified_fact_policy",
+                self._log_context(),
+            )
+            return self._generate_strict_data_review(overview, news)
+
         if getattr(self.config, "market_review_strict_data_only", False) is True:
             logger.info(
                 "[大盘] %s action=generate_review status=deterministic "
@@ -1381,14 +1389,29 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         )
 
         if macro:
+            source_labels = []
+            for item in macro.values():
+                source_name = str(item.get("source") or "")
+                if source_name == "Federal Reserve Bank of St. Louis (FRED)":
+                    label = "FRED"
+                elif source_name == "U.S. Department of the Treasury":
+                    label = "美国财政部"
+                else:
+                    label = source_name or "未标注"
+                if label not in source_labels:
+                    source_labels.append(label)
+            source_summary = " / ".join(source_labels)
+            macro_heading = (
+                f"#### 宏观定价锚（官方来源：{source_summary}）"
+                if self._get_review_language() != "en"
+                else f"#### Macro Pricing Anchors (official: {source_summary})"
+            )
             lines.extend(
                 [
                     "",
-                    "#### 宏观定价锚（官方 FRED）"
-                    if self._get_review_language() != "en"
-                    else "#### Macro Pricing Anchors (official FRED)",
-                    "| 指标 | 最新 | 日变化 | 数据日 |",
-                    "|---|---:|---:|---|",
+                    macro_heading,
+                    "| 指标 | 最新 | 日变化 | 数据日 | 来源 |",
+                    "|---|---:|---:|---|---|",
                 ]
             )
             for series_id in ("DGS2", "DGS10", "DTWEXBGS"):
@@ -1404,9 +1427,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 else:
                     value_text = f"{value:.2f}"
                     change_text = f"{change:+.2f}"
+                source_name = str(item.get("source") or "未标注")
                 lines.append(
                     f"| {item.get('name', series_id)} | {value_text} | "
-                    f"{change_text} | {item.get('as_of', '-')} |"
+                    f"{change_text} | {item.get('as_of', '-')} | {source_name} |"
                 )
 
         note = (
