@@ -42,6 +42,16 @@ def _fred_metric(series_id: str):
     }
 
 
+def _treasury_metric(series_id: str):
+    metric = _fred_metric(series_id)
+    metric["source"] = "U.S. Department of the Treasury"
+    metric["url"] = (
+        "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
+        "TextView"
+    )
+    return metric
+
+
 def _complete_context(as_of: str = "2026-07-30"):
     proxies = {
         "SPY": _price_metric("SPY", "标普500 ETF", 0.8, as_of=as_of),
@@ -185,6 +195,77 @@ def test_fred_metric_parses_official_observation_date_header():
     assert metric["previous_as_of"] == "2026-07-28"
     assert metric["value"] == pytest.approx(4.25)
     assert metric["change"] == pytest.approx(0.05)
+
+
+def test_treasury_fallback_parses_official_xml_and_excludes_future_rows():
+    response = MagicMock()
+    response.read.return_value = b"""<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"
+ xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices"
+ xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata">
+ <entry><content type="application/xml"><m:properties>
+  <d:NEW_DATE m:type="Edm.DateTime">2026-07-29T00:00:00</d:NEW_DATE>
+  <d:BC_2YEAR m:type="Edm.Double">4.20</d:BC_2YEAR>
+  <d:BC_10YEAR m:type="Edm.Double">4.50</d:BC_10YEAR>
+ </m:properties></content></entry>
+ <entry><content type="application/xml"><m:properties>
+  <d:NEW_DATE m:type="Edm.DateTime">2026-07-30T00:00:00</d:NEW_DATE>
+  <d:BC_2YEAR m:type="Edm.Double">4.25</d:BC_2YEAR>
+  <d:BC_10YEAR m:type="Edm.Double">4.55</d:BC_10YEAR>
+ </m:properties></content></entry>
+ <entry><content type="application/xml"><m:properties>
+  <d:NEW_DATE m:type="Edm.DateTime">2026-07-31T00:00:00</d:NEW_DATE>
+  <d:BC_2YEAR m:type="Edm.Double">9.99</d:BC_2YEAR>
+  <d:BC_10YEAR m:type="Edm.Double">9.99</d:BC_10YEAR>
+ </m:properties></content></entry>
+</feed>"""
+    response.__enter__.return_value = response
+    response.__exit__.return_value = False
+
+    with patch("data_provider.yfinance_fetcher.urlopen", return_value=response):
+        metrics = YfinanceFetcher._fetch_treasury_yield_metrics("2026-07-30")
+
+    assert set(metrics) == {"DGS2", "DGS10"}
+    assert metrics["DGS2"]["value"] == pytest.approx(4.25)
+    assert metrics["DGS2"]["previous_value"] == pytest.approx(4.20)
+    assert metrics["DGS10"]["value"] == pytest.approx(4.55)
+    assert metrics["DGS10"]["as_of"] == "2026-07-30"
+    assert metrics["DGS10"]["source"] == "U.S. Department of the Treasury"
+
+
+def test_us_context_uses_treasury_fallback_when_fred_yields_are_unavailable():
+    fetcher = YfinanceFetcher()
+    metrics = {}
+    for symbol, name in {
+        **fetcher._US_MARKET_PROXIES,
+        **fetcher._US_SECTOR_ETFS,
+    }.items():
+        metrics[symbol] = _price_metric(symbol, name, 1.0)
+
+    with patch.object(fetcher, "_fetch_us_etf_metrics", return_value=metrics), patch.object(
+        fetcher,
+        "_fetch_fred_metric",
+        return_value=None,
+    ), patch.object(
+        fetcher,
+        "_fetch_treasury_yield_metrics",
+        return_value={
+            "DGS2": _treasury_metric("DGS2"),
+            "DGS10": _treasury_metric("DGS10"),
+        },
+    ) as treasury_fetch:
+        context = fetcher.get_us_market_context()
+
+    treasury_fetch.assert_called_once_with("2026-07-30")
+    assert context is not None
+    assert context["quality"]["core_ready"] is True
+    assert context["quality"]["macro_ready"] is True
+    assert context["macro"]["DGS2"]["source"] == "U.S. Department of the Treasury"
+    assert context["macro"]["DGS10"]["source"] == "U.S. Department of the Treasury"
+    assert {item["name"] for item in context["sources"]} == {
+        "Yahoo Finance/yfinance",
+        "U.S. Department of the Treasury",
+    }
 
 
 def test_us_quality_requires_same_trade_date_and_all_core_layers():

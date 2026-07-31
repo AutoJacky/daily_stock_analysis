@@ -21,6 +21,7 @@ from io import StringIO
 from typing import Optional, List, Dict, Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from xml.etree import ElementTree
 
 import pandas as pd
 from tenacity import (
@@ -572,6 +573,114 @@ class YfinanceFetcher(BaseFetcher):
             "url": f"https://fred.stlouisfed.org/series/{series_id}",
         }
 
+    @classmethod
+    def _fetch_treasury_yield_metrics(
+        cls,
+        as_of: str = "",
+    ) -> Dict[str, Dict[str, Any]]:
+        """Fetch official 2Y/10Y par yields as a FRED-independent fallback.
+
+        The Treasury feed is used only when a required FRED yield series is
+        unavailable.  Values newer than the market evidence date are excluded
+        so a delayed report cannot accidentally consume future observations.
+        """
+        try:
+            cutoff = (
+                datetime.fromisoformat(as_of).date()
+                if as_of
+                else datetime.utcnow().date()
+            )
+        except ValueError:
+            cutoff = datetime.utcnow().date()
+
+        rows: List[Dict[str, Any]] = []
+        data_namespace = "http://schemas.microsoft.com/ado/2007/08/dataservices"
+        metadata_namespace = (
+            "http://schemas.microsoft.com/ado/2007/08/dataservices/metadata"
+        )
+
+        first_of_month = cutoff.replace(day=1)
+        previous_month = first_of_month - timedelta(days=1)
+        for month in (cutoff, previous_month):
+            month_key = month.strftime("%Y%m")
+            url = (
+                "https://home.treasury.gov/resource-center/data-chart-center/"
+                "interest-rates/pages/xml?data=daily_treasury_yield_curve"
+                f"&field_tdr_date_value_month={month_key}"
+            )
+            request = Request(
+                url,
+                headers={
+                    "User-Agent": "daily-stock-analysis/market-review",
+                    "Accept": "application/xml,text/xml;q=0.9,*/*;q=0.8",
+                },
+            )
+            with urlopen(request, timeout=12) as response:
+                payload = response.read()
+            root = ElementTree.fromstring(payload)
+            for properties in root.findall(
+                f".//{{{metadata_namespace}}}properties"
+            ):
+                date_node = properties.find(f"{{{data_namespace}}}NEW_DATE")
+                two_year_node = properties.find(f"{{{data_namespace}}}BC_2YEAR")
+                ten_year_node = properties.find(f"{{{data_namespace}}}BC_10YEAR")
+                if (
+                    date_node is None
+                    or two_year_node is None
+                    or ten_year_node is None
+                    or not date_node.text
+                    or not two_year_node.text
+                    or not ten_year_node.text
+                ):
+                    continue
+                observation_date = date_node.text.strip()[:10]
+                try:
+                    parsed_date = datetime.fromisoformat(observation_date).date()
+                    two_year = float(two_year_node.text.strip())
+                    ten_year = float(ten_year_node.text.strip())
+                except (TypeError, ValueError):
+                    continue
+                if parsed_date <= cutoff:
+                    rows.append(
+                        {
+                            "date": parsed_date,
+                            "DGS2": two_year,
+                            "DGS10": ten_year,
+                        }
+                    )
+            if len(rows) >= 2:
+                break
+
+        rows.sort(key=lambda item: item["date"])
+        if len(rows) < 2:
+            return {}
+
+        previous = rows[-2]
+        latest = rows[-1]
+        source_url = (
+            "https://home.treasury.gov/resource-center/data-chart-center/"
+            "interest-rates/TextView"
+            f"?type=daily_treasury_yield_curve&field_tdr_date_value={latest['date'].year}"
+        )
+        metrics: Dict[str, Dict[str, Any]] = {}
+        for series_id in ("DGS2", "DGS10"):
+            name, unit = cls._US_FRED_SERIES[series_id]
+            latest_value = float(latest[series_id])
+            previous_value = float(previous[series_id])
+            metrics[series_id] = {
+                "series_id": series_id,
+                "name": name,
+                "value": latest_value,
+                "previous_value": previous_value,
+                "change": latest_value - previous_value,
+                "unit": unit,
+                "as_of": latest["date"].isoformat(),
+                "previous_as_of": previous["date"].isoformat(),
+                "source": "U.S. Department of the Treasury",
+                "url": source_url,
+            }
+        return metrics
+
     def get_us_market_context(self) -> Optional[Dict[str, Any]]:
         """Build strict US participation, sector, liquidity, and macro context."""
         import yfinance as yf
@@ -593,6 +702,8 @@ class YfinanceFetcher(BaseFetcher):
             if symbol in metrics
         ]
         sector_metrics.sort(key=lambda item: float(item["change_pct"]), reverse=True)
+        proxy_dates = {item["as_of"] for item in proxies.values()}
+        latest_proxy_date = max(proxy_dates) if proxy_dates else ""
 
         macro: Dict[str, Dict[str, Any]] = {}
         for series_id in self._US_FRED_SERIES:
@@ -604,8 +715,27 @@ class YfinanceFetcher(BaseFetcher):
             if metric:
                 macro[series_id] = metric
 
-        proxy_dates = {item["as_of"] for item in proxies.values()}
-        latest_proxy_date = max(proxy_dates) if proxy_dates else ""
+        missing_yields = [
+            series_id for series_id in ("DGS2", "DGS10") if series_id not in macro
+        ]
+        if missing_yields:
+            try:
+                treasury_metrics = self._fetch_treasury_yield_metrics(latest_proxy_date)
+            except (
+                HTTPError,
+                URLError,
+                TimeoutError,
+                OSError,
+                ValueError,
+                ElementTree.ParseError,
+            ) as exc:
+                logger.warning("[U.S. Treasury] 获取官方收益率曲线失败: %s", exc)
+                treasury_metrics = {}
+            for series_id in missing_yields:
+                metric = treasury_metrics.get(series_id)
+                if metric:
+                    macro[series_id] = metric
+
         aligned_proxies = {
             symbol: item
             for symbol, item in proxies.items()
@@ -665,6 +795,30 @@ class YfinanceFetcher(BaseFetcher):
         if not macro_ok:
             missing.append("treasury_yields")
 
+        macro_sources = []
+        for source_name in (
+            "Federal Reserve Bank of St. Louis (FRED)",
+            "U.S. Department of the Treasury",
+        ):
+            source_metrics = [
+                item for item in macro.values() if item.get("source") == source_name
+            ]
+            if not source_metrics:
+                continue
+            macro_sources.append(
+                {
+                    "name": source_name,
+                    "scope": ", ".join(
+                        str(item.get("series_id") or "")
+                        for item in source_metrics
+                        if item.get("series_id")
+                    ),
+                    "as_of": max(
+                        str(item.get("as_of") or "") for item in source_metrics
+                    ),
+                }
+            )
+
         return {
             "as_of": latest_proxy_date,
             "proxies": aligned_proxies,
@@ -691,14 +845,7 @@ class YfinanceFetcher(BaseFetcher):
                     "scope": "ETF closes, volume, and sector rotation",
                     "as_of": latest_proxy_date,
                 },
-                {
-                    "name": "Federal Reserve Bank of St. Louis (FRED)",
-                    "scope": "DGS2, DGS10, DTWEXBGS",
-                    "as_of": max(
-                        (str(item.get("as_of") or "") for item in macro.values()),
-                        default="",
-                    ),
-                },
+                *macro_sources,
             ],
         }
 
