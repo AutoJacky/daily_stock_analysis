@@ -8,6 +8,7 @@ without introducing import cycles.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -36,6 +37,28 @@ _SUFFIX_TO_SPEC = {
     for suffix in spec.suffixes
 }
 
+# JPX has assigned four-character securities codes containing letters since
+# 2024. Letters may appear in the second and/or fourth position, excluding the
+# seven ambiguous letters documented by the Securities Identification Code
+# Committee. Examples include Kioxia Holdings ``285A``.
+_JPX_CODE_LETTERS = "ACDFGHJKLMNPRSTUWXY"
+_JPX_ALPHANUMERIC_CODE_RE = re.compile(
+    rf"^\d[0-9{_JPX_CODE_LETTERS}]\d[0-9{_JPX_CODE_LETTERS}]$"
+)
+
+
+def is_valid_jpx_stock_base(base: str) -> bool:
+    """Return whether a Yahoo ``.T`` base follows a supported JPX code form."""
+
+    normalized = (base or "").strip().upper()
+    if normalized.isdigit() and len(normalized) in (4, 5):
+        return True
+    return bool(
+        len(normalized) == 4
+        and any(character.isalpha() for character in normalized)
+        and _JPX_ALPHANUMERIC_CODE_RE.fullmatch(normalized)
+    )
+
 
 def split_suffix_symbol(stock_code: str) -> tuple[str, str] | None:
     """Return ``(base, suffix)`` for dotted symbols, upper-cased and stripped."""
@@ -59,6 +82,8 @@ def get_suffix_market(stock_code: str) -> Optional[str]:
     spec = _SUFFIX_TO_SPEC.get(suffix)
     if spec is None:
         return None
+    if spec.market == "jp":
+        return "jp" if is_valid_jpx_stock_base(base) else None
     if not (base.isdigit() and len(base) in spec.digit_lengths):
         return None
     return spec.market

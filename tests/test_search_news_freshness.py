@@ -2261,6 +2261,8 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
             ("00700.HK", True),
             ("HK00700", True),
             ("BRK.B", True),
+            ("285A.T", True),
+            ("7203.T", True),
             ("600519", False),
             ("600519.SH", False),
             ("", False),

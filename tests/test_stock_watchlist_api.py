@@ -85,3 +85,15 @@ def test_watchlist_add_normalizes_existing_mixed_separators_on_write() -> None:
     assert response.stock_codes == ["600519", "300750", "AAPL"]
     assert service.stock_list == "600519,300750,AAPL"
     assert service.update_calls == ["600519,300750,AAPL"]
+
+
+def test_watchlist_accepts_jpx_alphanumeric_stock_code() -> None:
+    service = FakeSystemConfigService("")
+
+    response = add_to_watchlist(
+        WatchlistRequest(stock_code="285a.t"),
+        service=service,
+    )
+
+    assert response.stock_codes == ["285a.t"]
+    assert service.stock_list == "285a.t"

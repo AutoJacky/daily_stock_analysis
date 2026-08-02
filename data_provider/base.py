@@ -25,8 +25,15 @@ from typing import Callable, Optional, List, Tuple, Dict, Any
 import pandas as pd
 import numpy as np
 from src.data.stock_index_loader import get_index_stock_name
-from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
-from src.services.market_symbol_utils import is_suffix_market_symbol
+from src.data.stock_mapping import (
+    STOCK_NAME_MAP,
+    canonicalize_foreign_stock_code,
+    is_meaningful_stock_name,
+)
+from src.services.market_symbol_utils import (
+    is_suffix_market_symbol,
+    normalize_suffix_market_symbol,
+)
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 from .fundamental_adapter import AkshareFundamentalAdapter
 from .yfinance_fundamental_adapter import YfinanceFundamentalAdapter
@@ -133,6 +140,9 @@ def normalize_stock_code(stock_code: str) -> str:
     # while preserving explicit Yahoo suffix forms for JP/KR/TW.
     if '.' in code:
         base, suffix = code.rsplit('.', 1)
+        suffix_symbol = normalize_suffix_market_symbol(code)
+        if suffix_symbol is not None:
+            return suffix_symbol
         if suffix.upper() == 'T' and base.isdigit() and len(base) in (4, 5):
             return f"{base}.{suffix.upper()}"
         if suffix.upper() in ('KS', 'KQ') and base.isdigit() and len(base) == 6:
@@ -2260,7 +2270,9 @@ class DataFetcherManager:
         raw_stock_code = (stock_code or "").strip()
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
-        static_name = STOCK_NAME_MAP.get(stock_code)
+        static_name = STOCK_NAME_MAP.get(stock_code) or STOCK_NAME_MAP.get(
+            canonicalize_foreign_stock_code(stock_code)
+        )
 
         # 1. 先检查缓存
         cached_name = self._get_cached_stock_name(stock_code)

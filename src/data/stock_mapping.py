@@ -72,6 +72,7 @@ STOCK_NAME_MAP = {
     "688111": "金山办公",
     "688256": "寒武纪",
     "688981": "中芯国际",
+    "300308": "中际旭创",
     # === US stocks ===
     "AAPL": "苹果",
     "TSLA": "特斯拉",
@@ -92,6 +93,12 @@ STOCK_NAME_MAP = {
     "LI": "理想汽车",
     "COIN": "Coinbase",
     "MSTR": "MicroStrategy",
+    "MU": "美光科技",
+    "LRCX": "拉姆研究",
+    "ASML": "阿斯麦",
+    "SNDK": "闪迪",
+    "AMAT": "应用材料",
+    "TSM": "台积电",
     # === HK stocks (5-digit) ===
     "00700": "腾讯控股",
     "03690": "美团",
@@ -107,6 +114,9 @@ STOCK_NAME_MAP = {
     "01299": "友邦保险",
     "00941": "中国移动",
     "00883": "中国海洋石油",
+    "02513": "智谱",
+    # === Japan stocks (Yahoo suffix form) ===
+    "285A.T": "铠侠控股",
 }
 
 
@@ -158,6 +168,12 @@ STOCK_ENGLISH_NAME_MAP: Dict[str, Tuple[str, ...]] = {
     "LI": ("Li Auto Inc.", "Li Auto"),
     "COIN": ("Coinbase Global, Inc.", "Coinbase"),
     "MSTR": ("MicroStrategy Incorporated", "MicroStrategy"),
+    "MU": ("Micron Technology, Inc.", "Micron"),
+    "LRCX": ("Lam Research Corporation", "Lam Research"),
+    "ASML": ("ASML Holding N.V.", "ASML"),
+    "SNDK": ("Sandisk Corporation", "Sandisk"),
+    "AMAT": ("Applied Materials, Inc.", "Applied Materials"),
+    "TSM": ("Taiwan Semiconductor Manufacturing Company Limited", "TSMC"),
     # === HK stocks (5-digit) ===
     "00700": ("Tencent Holdings", "Tencent"),
     "03690": ("Meituan",),
@@ -173,6 +189,9 @@ STOCK_ENGLISH_NAME_MAP: Dict[str, Tuple[str, ...]] = {
     "01299": ("AIA Group", "AIA"),
     "00941": ("China Mobile",),
     "00883": ("CNOOC",),
+    "02513": ("Beijing Zhipu Huazhang Technology Co., Ltd.", "Zhipu AI"),
+    # === Japan stocks ===
+    "285A.T": ("Kioxia Holdings Corporation", "Kioxia"),
 }
 
 

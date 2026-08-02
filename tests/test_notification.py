@@ -772,6 +772,27 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("美股复盘·自选决策", digest)
         self.assertIn("持有者保持/观察", digest)
 
+    def test_pushplus_digest_labels_hk_jp_companion_report(self):
+        service = NotificationService()
+        results = [
+            AnalysisResult(
+                code=code,
+                name=name,
+                sentiment_score=55,
+                trend_prediction="range",
+                operation_advice="hold",
+                confidence_level="medium",
+            )
+            for code, name in (("HK02513", "智谱"), ("285A.T", "铠侠控股"))
+        ]
+
+        digest = service.generate_pushplus_digest(
+            results,
+            requested_codes=["HK02513", "285A.T"],
+        )
+
+        self.assertIn("港股/日股复盘·自选决策", digest)
+
     def test_pushplus_digest_reports_all_failed_run(self):
         service = NotificationService()
 

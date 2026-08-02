@@ -45,22 +45,27 @@ class _FakeFetcher(BaseFetcher):
 
 def test_normalize_and_detect_jp_kr_suffix_codes() -> None:
     assert normalize_stock_code("7203.t") == "7203.T"
+    assert normalize_stock_code("285a.t") == "285A.T"
     assert normalize_stock_code("005930.ks") == "005930.KS"
     assert normalize_stock_code("035720.kq") == "035720.KQ"
 
     assert detect_market("7203.T") == "jp"
     assert detect_market("6758.T") == "jp"
+    assert detect_market("285A.T") == "jp"
     assert detect_market("005930.KS") == "kr"
     assert detect_market("035720.KQ") == "kr"
     assert detect_market("005930") == "cn"
 
     assert get_market_for_stock("7203.T") == "jp"
+    assert get_market_for_stock("285A.T") == "jp"
     assert get_market_for_stock("005930.KS") == "kr"
     assert get_market_for_stock("005930") == "cn"
 
     assert is_code_like("7203.T") is True
+    assert is_code_like("285A.T") is True
     assert is_code_like("005930.KS") is True
     assert normalize_code("035720.KQ") == "035720.KQ"
+    assert normalize_code("285a.t") == "285A.T"
 
 
 def test_market_guidelines_for_jp_kr_exclude_a_share_specific_context() -> None:
@@ -79,6 +84,7 @@ def test_yfinance_keeps_jp_kr_suffix_codes_and_indices() -> None:
     fetcher = YfinanceFetcher()
 
     assert fetcher._convert_stock_code("7203.T") == "7203.T"
+    assert fetcher._convert_stock_code("285A.T") == "285A.T"
     assert fetcher._convert_stock_code("005930.KS") == "005930.KS"
     assert fetcher._convert_stock_code("035720.KQ") == "035720.KQ"
 

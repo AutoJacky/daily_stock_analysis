@@ -5,6 +5,7 @@ on:
   # 夏令时收盘后75分钟，优先保证完整收盘数据）。
   schedule:
     - cron: '10 7 * * 1-5'
+    - cron: '15 8 * * 1-5'
     - cron: '15 21 * * 1-5'
   
   # 手动触发
@@ -471,6 +472,10 @@ jobs:
             MODE="full"
             export MARKET_REVIEW_REGION="cn"
             export STOCK_MARKET_FILTER="cn"
+          elif [ "${SCHEDULE_EXPRESSION:-}" = "15 8 * * 1-5" ]; then
+            # 亚洲收盘任务：香港/日股均收盘后，仅分析对应自选。
+            MODE="stocks-only"
+            export STOCK_MARKET_FILTER="hk,jp"
           elif [ "${SCHEDULE_EXPRESSION:-}" = "15 21 * * 1-5" ]; then
             # 美股收盘任务：先推美股复盘，再分析自选中的美股。
             MODE="full"

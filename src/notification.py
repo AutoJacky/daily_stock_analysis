@@ -2023,6 +2023,9 @@ class NotificationService(
         market_label = (
             "A股" if report_markets == {"cn"}
             else "美股" if report_markets == {"us"}
+            else "港股" if report_markets == {"hk"}
+            else "日股" if report_markets == {"jp"}
+            else "港股/日股" if report_markets == {"hk", "jp"}
             else "多市场"
         )
         requested_count = len(requested_codes) or len(results) + len(failed_items)

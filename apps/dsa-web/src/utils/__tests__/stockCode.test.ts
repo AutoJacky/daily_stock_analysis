@@ -55,6 +55,7 @@ describe('normalizeStockCode', () => {
   it('keeps JP/KR Yahoo suffix codes in canonical uppercase suffix form', () => {
     expect(normalizeStockCode('7203.T')).toBe('7203.T');
     expect(normalizeStockCode('6758.t')).toBe('6758.T');
+    expect(normalizeStockCode('285a.t')).toBe('285A.T');
     expect(normalizeStockCode('005930.KS')).toBe('005930.KS');
     expect(normalizeStockCode('035720.kq')).toBe('035720.KQ');
     expect(normalizeStockCode('005930')).toBe('005930');

@@ -42,6 +42,7 @@ from src.data.stock_mapping import (
     canonicalize_foreign_stock_code,
     foreign_stock_english_aliases,
 )
+from src.services.market_symbol_utils import get_suffix_market
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 
 logger = logging.getLogger(__name__)
@@ -2367,7 +2368,7 @@ class SearchService:
     
     @staticmethod
     def _is_foreign_stock(stock_code: str) -> bool:
-        """判断是否为港股或美股。
+        """判断是否为受支持的境外股票。
 
         Honours all canonical input forms — bare ticker (``AAPL`` / ``00700``),
         suffixed ticker (``AAPL.US`` / ``00700.HK``), and prefixed HK ticker
@@ -2377,7 +2378,10 @@ class SearchService:
         PR #2047 (so alias resolution and foreign-ness detection no longer
         disagree on the same input).
         """
-        code = canonicalize_foreign_stock_code(stock_code).strip()
+        raw_code = (stock_code or "").strip().upper()
+        if get_suffix_market(raw_code) in {"jp", "kr", "tw"}:
+            return True
+        code = canonicalize_foreign_stock_code(raw_code).strip()
         if not code:
             return False
         # 美股：1-5个大写字母，可能包含点（如 BRK.B）

@@ -13,7 +13,7 @@ const STOCK_CODE_PATTERNS = [
   /^\d{5}$/, // HK code without prefix
   /^HK\d{1,5}$/, // HK-prefixed code, for example HK00700
   /^\d{1,5}\.HK$/, // HK suffix format, for example 00700.HK
-  /^\d{4,5}\.T$/, // Japan Yahoo suffix format, for example 7203.T
+  /^(?:\d{4,5}|\d[0-9ACDFGHJKLMNPRSTUWXY]\d[0-9ACDFGHJKLMNPRSTUWXY])\.T$/, // Japan, including JPX letter codes such as 285A.T
   /^\d{6}\.(KS|KQ)$/, // Korea Yahoo suffix format, for example 005930.KS or 035720.KQ
   /^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$/, // Common US ticker format
 ];

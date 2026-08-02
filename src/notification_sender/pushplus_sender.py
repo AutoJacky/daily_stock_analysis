@@ -127,6 +127,12 @@ class PushplusSender:
             return f"🎯 A股自选决策 · {date_str}"
         if "美股复盘·自选决策" in title_probe:
             return f"🎯 美股自选决策 · {date_str}"
+        if "港股/日股复盘·自选决策" in title_probe:
+            return f"🎯 港日股自选决策 · {date_str}"
+        if "港股复盘·自选决策" in title_probe:
+            return f"🎯 港股自选决策 · {date_str}"
+        if "日股复盘·自选决策" in title_probe:
+            return f"🎯 日股自选决策 · {date_str}"
         if "大盘复盘" in title_probe or "市场复盘" in title_probe:
             if "美股" in title_probe:
                 return f"📊 美股收盘复盘 · {date_str}"

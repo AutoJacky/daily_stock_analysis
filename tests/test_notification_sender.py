@@ -1424,6 +1424,9 @@ class TestPushplusSender(unittest.TestCase):
         self.assertTrue(sender.send_to_pushplus("# 📊 美股大盘复盘"))
         self.assertIn("美股收盘复盘", mock_post.call_args.kwargs["json"]["title"])
 
+        self.assertTrue(sender.send_to_pushplus("# 📊 港股/日股复盘·自选决策"))
+        self.assertIn("港日股自选决策", mock_post.call_args.kwargs["json"]["title"])
+
     @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
     @mock.patch("src.notification_sender.pushplus_sender.requests.post")
     def test_send_long_message_chunks_pushplus_requests(self, mock_post, _mock_sleep):

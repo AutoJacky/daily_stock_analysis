@@ -69,8 +69,11 @@ export function normalizeStockCode(stockCode: string): string {
     const suffix = code.slice(dotIndex + 1).toUpperCase();
 
     // JP/KR Yahoo suffix-only codes are canonical as uppercase suffix forms.
-    if (suffix === 'T' && /^\d{4,5}$/.test(base)) {
-      return `${base}.${suffix}`;
+    if (
+      suffix === 'T'
+      && /^(?:\d{4,5}|\d[0-9ACDFGHJKLMNPRSTUWXY]\d[0-9ACDFGHJKLMNPRSTUWXY])$/i.test(base)
+    ) {
+      return `${base.toUpperCase()}.${suffix}`;
     }
     if ((suffix === 'KS' || suffix === 'KQ') && /^\d{6}$/.test(base)) {
       return `${base}.${suffix}`;

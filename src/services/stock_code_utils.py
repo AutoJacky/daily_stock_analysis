@@ -97,6 +97,8 @@ def is_code_like(value: str) -> bool:
         return False
     if text.isdigit() and len(text) in (5, 6):
         return True
+    if normalize_suffix_market_symbol(text) is not None:
+        return True
     if _strip_exchange_suffix(text) is not None:
         return True
     if re.match(r"^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$", text):
