@@ -223,6 +223,29 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_litellm_transient_retry_env_is_loaded_and_bounded(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "LLM_TRANSIENT_RETRY_MAX_RETRIES": "99",
+                "LLM_TRANSIENT_RETRY_BASE_DELAY": "7.5",
+                "LLM_TRANSIENT_RETRY_MAX_DELAY": "120",
+                "LLM_TRANSIENT_RETRY_JITTER": "3",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_transient_retry_max_retries, 20)
+        self.assertEqual(config.llm_transient_retry_base_delay, 7.5)
+        self.assertEqual(config.llm_transient_retry_max_delay, 120.0)
+        self.assertEqual(config.llm_transient_retry_jitter, 3.0)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_prompt_cache_config_defaults_are_safe(
         self, _mock_parse_litellm_yaml, _mock_setup_env
     ):

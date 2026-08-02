@@ -751,6 +751,10 @@ class Config:
 
     # Unified temperature for all LLM calls (LLM_TEMPERATURE); legacy per-provider temps are fallback only
     llm_temperature: float = 0.7
+    llm_transient_retry_max_retries: int = 5
+    llm_transient_retry_base_delay: float = 5.0
+    llm_transient_retry_max_delay: float = 60.0
+    llm_transient_retry_jitter: float = 1.0
 
     # Provider prompt-cache controls. These do not control provider implicit cache.
     llm_prompt_cache_telemetry_enabled: bool = True
@@ -1673,6 +1677,34 @@ class Config:
             ),
             llm_prompt_cache_diagnostics_level=parse_prompt_cache_diagnostics_level(
                 os.getenv("LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL")
+            ),
+            llm_transient_retry_max_retries=parse_env_int(
+                os.getenv("LLM_TRANSIENT_RETRY_MAX_RETRIES"),
+                5,
+                field_name="LLM_TRANSIENT_RETRY_MAX_RETRIES",
+                minimum=0,
+                maximum=20,
+            ),
+            llm_transient_retry_base_delay=parse_env_float(
+                os.getenv("LLM_TRANSIENT_RETRY_BASE_DELAY"),
+                5.0,
+                field_name="LLM_TRANSIENT_RETRY_BASE_DELAY",
+                minimum=0.0,
+                maximum=300.0,
+            ),
+            llm_transient_retry_max_delay=parse_env_float(
+                os.getenv("LLM_TRANSIENT_RETRY_MAX_DELAY"),
+                60.0,
+                field_name="LLM_TRANSIENT_RETRY_MAX_DELAY",
+                minimum=0.0,
+                maximum=900.0,
+            ),
+            llm_transient_retry_jitter=parse_env_float(
+                os.getenv("LLM_TRANSIENT_RETRY_JITTER"),
+                1.0,
+                field_name="LLM_TRANSIENT_RETRY_JITTER",
+                minimum=0.0,
+                maximum=30.0,
             ),
             gemini_api_keys=gemini_api_keys,
             anthropic_api_keys=anthropic_api_keys,

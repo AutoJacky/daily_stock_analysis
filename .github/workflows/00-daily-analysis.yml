@@ -48,7 +48,7 @@ jobs:
     # 推荐位置仍是 Settings -> Secrets and variables -> Actions -> Repository variables。
     environment: STOCK_LIST
     # 添加超时限制，防止任务卡死
-    timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '30') }}
+    timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '180') }}
     
     steps:
       - name: 检出代码
@@ -91,6 +91,10 @@ jobs:
           GENERATION_BACKEND_TIMEOUT_SECONDS: ${{ vars.GENERATION_BACKEND_TIMEOUT_SECONDS || secrets.GENERATION_BACKEND_TIMEOUT_SECONDS }}
           GENERATION_BACKEND_MAX_OUTPUT_BYTES: ${{ vars.GENERATION_BACKEND_MAX_OUTPUT_BYTES || secrets.GENERATION_BACKEND_MAX_OUTPUT_BYTES }}
           GENERATION_BACKEND_MAX_CONCURRENCY: ${{ vars.GENERATION_BACKEND_MAX_CONCURRENCY || secrets.GENERATION_BACKEND_MAX_CONCURRENCY }}
+          LLM_TRANSIENT_RETRY_MAX_RETRIES: ${{ vars.LLM_TRANSIENT_RETRY_MAX_RETRIES || secrets.LLM_TRANSIENT_RETRY_MAX_RETRIES || '8' }}
+          LLM_TRANSIENT_RETRY_BASE_DELAY: ${{ vars.LLM_TRANSIENT_RETRY_BASE_DELAY || secrets.LLM_TRANSIENT_RETRY_BASE_DELAY || '5' }}
+          LLM_TRANSIENT_RETRY_MAX_DELAY: ${{ vars.LLM_TRANSIENT_RETRY_MAX_DELAY || secrets.LLM_TRANSIENT_RETRY_MAX_DELAY || '60' }}
+          LLM_TRANSIENT_RETRY_JITTER: ${{ vars.LLM_TRANSIENT_RETRY_JITTER || secrets.LLM_TRANSIENT_RETRY_JITTER || '2' }}
           LOCAL_CLI_BACKEND_MAX_CONCURRENCY: ${{ vars.LOCAL_CLI_BACKEND_MAX_CONCURRENCY || secrets.LOCAL_CLI_BACKEND_MAX_CONCURRENCY }}
           AGENT_GENERATION_BACKEND: ${{ vars.AGENT_GENERATION_BACKEND || secrets.AGENT_GENERATION_BACKEND }}
           # LITELLM_CONFIG
@@ -123,7 +127,7 @@ jobs:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || secrets.GEMINI_MODEL || 'gemini-3-flash-preview' }}
           GEMINI_MODEL_FALLBACK: ${{ vars.GEMINI_MODEL_FALLBACK || secrets.GEMINI_MODEL_FALLBACK || 'gemini-2.5-flash' }}
-          GEMINI_REQUEST_DELAY: '3.0'
+          GEMINI_REQUEST_DELAY: ${{ vars.GEMINI_REQUEST_DELAY || secrets.GEMINI_REQUEST_DELAY || '0' }}
           
           # AIHubMix（优先于 OPENAI_API_KEY，自动适配 base_url，推荐国内用户）
           AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
@@ -431,7 +435,7 @@ jobs:
           BACKTEST_ENABLED: ${{ vars.BACKTEST_ENABLED || secrets.BACKTEST_ENABLED || 'true' }}
           BACKTEST_EVAL_WINDOW_DAYS: ${{ vars.BACKTEST_EVAL_WINDOW_DAYS || secrets.BACKTEST_EVAL_WINDOW_DAYS || '10' }}
           BACKTEST_MIN_AGE_DAYS: ${{ vars.BACKTEST_MIN_AGE_DAYS || secrets.BACKTEST_MIN_AGE_DAYS || '14' }}
-          MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '1' }}
+          MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '3' }}
           # 基本面需先取估值再拉财报，云端网络下默认 8 秒容易只剩约 2 秒给财报。
           FUNDAMENTAL_STAGE_TIMEOUT_SECONDS: ${{ vars.FUNDAMENTAL_STAGE_TIMEOUT_SECONDS || secrets.FUNDAMENTAL_STAGE_TIMEOUT_SECONDS || '30' }}
           FUNDAMENTAL_FETCH_TIMEOUT_SECONDS: ${{ vars.FUNDAMENTAL_FETCH_TIMEOUT_SECONDS || secrets.FUNDAMENTAL_FETCH_TIMEOUT_SECONDS || '12' }}

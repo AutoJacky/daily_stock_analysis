@@ -13,6 +13,7 @@ A股自选股智能分析系统 - AI分析层
 import json
 import logging
 import math
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -50,7 +51,11 @@ from src.llm.hermes import (
     sanitize_hermes_error_text,
 )
 from src.llm.generation_params import apply_litellm_generation_params
-from src.llm.errors import call_litellm_with_param_recovery
+from src.llm.errors import (
+    call_litellm_with_param_recovery,
+    classify_litellm_transient_error,
+    litellm_retry_after_seconds,
+)
 from src.llm.backend_registry import (
     LOCAL_CLI_GENERATION_BACKEND_IDS,
     LITELLM_BACKEND_ID,
@@ -298,11 +303,15 @@ class _AllModelsFailedError(Exception):
         last_response_text: Optional[str] = None,
         last_model: Optional[str] = None,
         last_usage: Optional[Dict[str, Any]] = None,
+        retryable: bool = False,
+        retry_after_seconds: Optional[float] = None,
     ):
         super().__init__(message)
         self.last_response_text = last_response_text
         self.last_model = last_model
         self.last_usage = last_usage or {}
+        self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
 
 
 from src.utils.data_processing import normalize_report_signal_attribution
@@ -3564,6 +3573,75 @@ class GeminiAnalyzer:
         response_validator: Optional[Callable[[str], None]] = None,
         audit_context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, str, Dict[str, Any]]:
+        """Run one fallback chain and persist through transient provider limits.
+
+        The retry budget only applies to transport failures, HTTP 429 and 5xx.
+        Invalid output, authentication failures and exhausted billing quota are
+        not retried. This keeps full scheduled batches queued without claiming
+        to bypass a provider's actual quota.
+        """
+        config = self._get_runtime_config()
+        max_retries = max(
+            0,
+            min(20, int(getattr(config, "llm_transient_retry_max_retries", 5) or 0)),
+        )
+        base_delay = max(
+            0.0,
+            float(getattr(config, "llm_transient_retry_base_delay", 5.0) or 0.0),
+        )
+        max_delay = max(
+            base_delay,
+            float(getattr(config, "llm_transient_retry_max_delay", 60.0) or 0.0),
+        )
+        jitter = max(
+            0.0,
+            float(getattr(config, "llm_transient_retry_jitter", 1.0) or 0.0),
+        )
+
+        for retry_index in range(max_retries + 1):
+            try:
+                return self._call_litellm_impl_once(
+                    prompt,
+                    generation_config,
+                    system_prompt=system_prompt,
+                    stream=stream,
+                    stream_progress_callback=stream_progress_callback,
+                    response_validator=response_validator,
+                    audit_context=audit_context,
+                )
+            except _AllModelsFailedError as exc:
+                if (
+                    not exc.retryable
+                    or exc.last_response_text is not None
+                    or retry_index >= max_retries
+                ):
+                    raise
+                exponential_delay = min(max_delay, base_delay * (2 ** retry_index))
+                delay = exponential_delay + (random.uniform(0.0, jitter) if jitter else 0.0)
+                if exc.retry_after_seconds is not None:
+                    delay = max(delay, exc.retry_after_seconds)
+                logger.warning(
+                    "[LiteLLM] transient provider failure; queued retry %d/%d in %.1fs",
+                    retry_index + 1,
+                    max_retries,
+                    delay,
+                )
+                if delay > 0:
+                    time.sleep(delay)
+
+        raise AssertionError("unreachable LiteLLM retry state")
+
+    def _call_litellm_impl_once(
+        self,
+        prompt: str,
+        generation_config: dict,
+        *,
+        system_prompt: Optional[str] = None,
+        stream: bool = False,
+        stream_progress_callback: Optional[Callable[[int], None]] = None,
+        response_validator: Optional[Callable[[str], None]] = None,
+        audit_context: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, str, Dict[str, Any]]:
         """Call LLM via litellm with fallback across configured models.
 
         When channels/YAML are configured, every model goes through the Router
@@ -3602,6 +3680,8 @@ class GeminiAnalyzer:
         last_response_text: Optional[str] = None
         last_model: Optional[str] = None
         last_usage: Dict[str, Any] = {}
+        retryable_failure_seen = False
+        retry_after_hint: Optional[float] = None
         effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
         router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
@@ -3778,6 +3858,11 @@ class GeminiAnalyzer:
                 raise ValueError("LLM returned empty response")
 
             except Exception as e:
+                if classify_litellm_transient_error(e):
+                    retryable_failure_seen = True
+                    hint = litellm_retry_after_seconds(e)
+                    if hint is not None:
+                        retry_after_hint = max(retry_after_hint or 0.0, hint)
                 safe_error = self._sanitize_litellm_exception_text(e, config=config, model=model)
                 logger.warning("[LiteLLM] %s failed: %s", model, safe_error)
                 last_error = RuntimeError(f"{type(e).__name__}: {safe_error}")
@@ -3788,6 +3873,8 @@ class GeminiAnalyzer:
             last_response_text=last_response_text,
             last_model=last_model,
             last_usage=last_usage,
+            retryable=retryable_failure_seen,
+            retry_after_seconds=retry_after_hint,
         )
 
     def generate_text(

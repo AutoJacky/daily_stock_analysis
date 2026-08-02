@@ -22,6 +22,50 @@ _UNSUPPORTED_PARAM_MARKERS = (
     "does not support",
 )
 
+_NON_RETRYABLE_QUOTA_MARKERS = (
+    "insufficient balance",
+    "balance insufficient",
+    "account balance",
+    "insufficient_balance",
+    "insufficient funds",
+    "insufficient credits",
+    "insufficient_credits",
+    "insufficient quota",
+    "insufficient_quota",
+    "quota exceeded",
+    "billing quota",
+    "recharge",
+    "余额不足",
+)
+_TRANSIENT_ERROR_MARKERS = (
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "requests per minute",
+    "tokens per minute",
+    "temporarily unavailable",
+    "service unavailable",
+    "server overloaded",
+    "model overloaded",
+    "no deployments available",
+    "connection reset",
+    "connection aborted",
+    "connection refused",
+    "connection timed out",
+    "read timed out",
+    "read timeout",
+    "gateway timeout",
+    "bad gateway",
+    "cooldown",
+)
+_TRANSIENT_EXCEPTION_NAMES = (
+    "ratelimit",
+    "timeout",
+    "apiconnection",
+    "serviceunavailable",
+    "internalserver",
+)
+
 _TEMPERATURE_VALUE_PATTERN = r"-?\d+(?:\.\d+)?"
 _ALLOWED_TEMPERATURE_PATTERNS = (
     re.compile(
@@ -61,6 +105,80 @@ def _collect_error_text(value: Any, seen: Optional[set] = None) -> List[str]:
 
 def _normalized_error_text(error: BaseException) -> str:
     return " ".join(chunk for chunk in _collect_error_text(error) if chunk).lower()
+
+
+def _walk_error_values(value: Any, seen: Optional[set] = None):
+    """Yield nested exception/response values without retaining request payloads."""
+    if seen is None:
+        seen = set()
+    if value is None or id(value) in seen:
+        return
+    seen.add(id(value))
+    yield value
+    if isinstance(value, BaseException):
+        yield from _walk_error_values(getattr(value, "args", None), seen)
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _walk_error_values(item, seen)
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _walk_error_values(item, seen)
+    else:
+        for attr in ("response", "body"):
+            if hasattr(value, attr):
+                yield from _walk_error_values(getattr(value, attr), seen)
+
+
+def _error_status_codes(error: BaseException) -> List[int]:
+    statuses: List[int] = []
+    for value in _walk_error_values(error):
+        raw_status = value.get("status_code") if isinstance(value, dict) else getattr(value, "status_code", None)
+        try:
+            status = int(raw_status)
+        except (TypeError, ValueError):
+            continue
+        if status not in statuses:
+            statuses.append(status)
+    return statuses
+
+
+def classify_litellm_transient_error(error: BaseException) -> bool:
+    """Return whether a failed provider call is safe to retry with backoff.
+
+    HTTP 429 caused by an empty balance or exhausted hard quota is deliberately
+    excluded: waiting cannot repair it and would only hold a scheduled run open.
+    """
+    text = _normalized_error_text(error)
+    if any(marker in text for marker in _NON_RETRYABLE_QUOTA_MARKERS):
+        return False
+
+    statuses = _error_status_codes(error)
+    if any(status == 429 or 500 <= status <= 599 for status in statuses):
+        return True
+
+    exception_name = type(error).__name__.replace("_", "").lower()
+    if any(marker in exception_name for marker in _TRANSIENT_EXCEPTION_NAMES):
+        return True
+    return any(marker in text for marker in _TRANSIENT_ERROR_MARKERS)
+
+
+def litellm_retry_after_seconds(error: BaseException) -> Optional[float]:
+    """Extract a provider Retry-After hint, capped against hostile responses."""
+    for value in _walk_error_values(error):
+        headers = value.get("headers") if isinstance(value, dict) else getattr(value, "headers", None)
+        if headers is None:
+            continue
+        try:
+            raw_value = headers.get("retry-after") or headers.get("Retry-After")
+        except AttributeError:
+            continue
+        try:
+            seconds = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if seconds >= 0:
+            return min(seconds, 900.0)
+    return None
 
 
 def _parse_allowed_temperature(text: str) -> Optional[float]:

@@ -126,6 +126,10 @@ class TestAnalyzerGenerateText:
             cfg.openai_base_url = None
             cfg.generation_backend = "litellm"
             cfg.generation_fallback_backend = "litellm"
+            cfg.llm_transient_retry_max_retries = 0
+            cfg.llm_transient_retry_base_delay = 0
+            cfg.llm_transient_retry_max_delay = 0
+            cfg.llm_transient_retry_jitter = 0
             mock_cfg.return_value = cfg
             from src.analyzer import GeminiAnalyzer
             analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
@@ -133,6 +137,53 @@ class TestAnalyzerGenerateText:
             analyzer._litellm_available = True
             analyzer._config_override = cfg
             return analyzer
+
+    def test_transient_provider_failure_is_retried_with_backoff(self):
+        from src.analyzer import _AllModelsFailedError
+
+        analyzer = self._make_analyzer()
+        analyzer._config_override.llm_transient_retry_max_retries = 2
+        analyzer._config_override.llm_transient_retry_base_delay = 2
+        analyzer._config_override.llm_transient_retry_max_delay = 10
+        analyzer._config_override.llm_transient_retry_jitter = 0
+        transient_error = _AllModelsFailedError(
+            "rate limited",
+            retryable=True,
+            retry_after_seconds=3,
+        )
+
+        with patch.object(
+            analyzer,
+            "_call_litellm_impl_once",
+            side_effect=[transient_error, ("ok", "provider/model", {})],
+        ) as call_once, patch("src.analyzer.time.sleep") as sleep:
+            result = analyzer._call_litellm_impl("prompt", {"max_tokens": 32})
+
+        assert result == ("ok", "provider/model", {})
+        assert call_once.call_count == 2
+        sleep.assert_called_once_with(3)
+
+    def test_provider_response_failure_is_not_retried(self):
+        from src.analyzer import _AllModelsFailedError
+
+        analyzer = self._make_analyzer()
+        analyzer._config_override.llm_transient_retry_max_retries = 8
+        response_error = _AllModelsFailedError(
+            "invalid response",
+            last_response_text="not json",
+            retryable=True,
+        )
+
+        with patch.object(
+            analyzer,
+            "_call_litellm_impl_once",
+            side_effect=response_error,
+        ) as call_once, patch("src.analyzer.time.sleep") as sleep:
+            with pytest.raises(_AllModelsFailedError):
+                analyzer._call_litellm_impl("prompt", {"max_tokens": 32})
+
+        call_once.assert_called_once()
+        sleep.assert_not_called()
 
     def test_legacy_market_group_normalizes_supported_markets(self):
         from src.analyzer import _legacy_market_group

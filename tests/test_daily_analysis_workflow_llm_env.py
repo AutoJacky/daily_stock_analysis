@@ -116,6 +116,20 @@ def test_daily_analysis_maps_prompt_cache_config() -> None:
         assert f"secrets.{key}" in env[key]
 
 
+def test_daily_analysis_keeps_full_batch_capacity_and_transient_retries() -> None:
+    workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    analyze_job = workflow["jobs"]["analyze"]
+    env = _load_daily_analysis_env()
+
+    assert "'180'" in analyze_job["timeout-minutes"]
+    assert "'3'" in env["MAX_WORKERS"]
+    assert "'0'" in env["GEMINI_REQUEST_DELAY"]
+    assert "'8'" in env["LLM_TRANSIENT_RETRY_MAX_RETRIES"]
+    assert "'5'" in env["LLM_TRANSIENT_RETRY_BASE_DELAY"]
+    assert "'60'" in env["LLM_TRANSIENT_RETRY_MAX_DELAY"]
+    assert "'2'" in env["LLM_TRANSIENT_RETRY_JITTER"]
+
+
 def test_daily_analysis_maps_generation_backend_runtime_config() -> None:
     env = _load_daily_analysis_env()
 
