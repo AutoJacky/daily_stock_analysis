@@ -559,6 +559,85 @@ def markdown_to_pushplus_html(markdown_text: str) -> str:
     )
 
 
+def markdown_to_pushplus_compact_html(markdown_text: str) -> str:
+    """Render a low-overhead but still styled single-document PushPlus page.
+
+    The primary renderer intentionally repeats inline styles so hostile mobile
+    WebViews preserve the PPT-card appearance.  When that style overhead alone
+    approaches PushPlus' character quota, this renderer keeps the same headings,
+    links, tables and semantic colours with much shorter inline attributes.
+    """
+
+    source = _compact_report_links(markdown_text)
+    body = markdown2.markdown(
+        source,
+        extras=["tables", "break-on-newline", "cuddled-lists"],
+        safe_mode="escape",
+    )
+    styles = {
+        "h1": "font-size:22px;color:#fff;background:#174ea6;padding:13px;border-radius:9px;",
+        "h2": "font-size:19px;color:#174ea6;border-left:4px solid #174ea6;padding-left:8px;margin-top:18px;",
+        "h3": "font-size:17px;color:#1f2937;background:#eef4ff;padding:8px;border-radius:6px;",
+        "p": "font-size:16px;line-height:1.65;color:#344054;",
+        "li": "font-size:16px;line-height:1.6;margin:4px 0;",
+        "blockquote": "margin:10px 0;padding:10px;background:#fff5cc;border-left:4px solid #f59e0b;",
+        "table": "border-collapse:collapse;width:100%;font-size:13px;table-layout:fixed;",
+        "th": "border:1px solid #ccd3dd;padding:5px;background:#eef2f7;word-break:break-word;",
+        "td": "border:1px solid #dfe3e8;padding:5px;word-break:break-word;",
+        "a": "color:#0969da;text-decoration:none;",
+        "strong": "color:#b42318;",
+    }
+    for tag, style in styles.items():
+        body = re.sub(
+            rf"<{tag}(?P<attrs>\s[^>]*)?>",
+            lambda match, tag=tag, style=style: (
+                f'<{tag}{match.group("attrs") or ""} style="{style}">'
+            ),
+            body,
+        )
+    return (
+        '<article style="max-width:760px;margin:auto;padding:12px;'
+        'font-family:-apple-system,BlinkMacSystemFont,PingFang SC,Microsoft YaHei,sans-serif;'
+        'word-break:break-word;background:#fff;">'
+        f"{body}</article>"
+    )
+
+
+def compact_markdown_single_document(markdown_text: str, max_chars: int) -> str:
+    """Fit an exceptional long report into one Markdown request.
+
+    Normal stock and market reports are far below the 20,000-character service
+    quota.  This final guard preserves the title, every section heading and a
+    proportional excerpt from every section instead of dropping the tail or
+    creating multiple notifications.
+    """
+
+    source = str(markdown_text or "").strip()
+    if len(source) <= max_chars:
+        return source
+
+    sections = re.split(r"(?=^#{1,6}\s+)", source, flags=re.MULTILINE)
+    sections = [section.strip() for section in sections if section.strip()]
+    if not sections:
+        return source[:max_chars]
+
+    reserve = min(180, max_chars // 10)
+    budget = max(1, max_chars - reserve)
+    per_section = max(120, budget // len(sections))
+    compacted = []
+    for section in sections:
+        if len(section) <= per_section:
+            compacted.append(section)
+            continue
+        heading, _, remainder = section.partition("\n")
+        allowance = max(40, per_section - len(heading) - 2)
+        compacted.append(f"{heading}\n{remainder[:allowance].rstrip()}…")
+
+    note = "\n\n> 内容超过推送平台单条上限，本页保留了每个分析章节的核心证据；完整原文同步保留在 WebUI 历史报告。"
+    output = "\n\n".join(compacted) + note
+    return output[:max_chars]
+
+
 def markdown_to_plain_text(markdown_text: str) -> str:
     """
     将 Markdown 转换为纯文本

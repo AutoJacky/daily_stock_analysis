@@ -219,6 +219,26 @@ class TestPipelineSingleStockNotify(unittest.TestCase):
         pipeline.notifier.generate_brief_report.assert_not_called()
         pipeline.notifier.send.assert_not_called()
 
+    def test_incomplete_single_stock_report_is_kept_but_not_pushed(self):
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.notifier = _TrackingNotifier()
+        pipeline.notifier.evaluate_single_stock_push_readiness = MagicMock(
+            return_value=(False, ["财报数据不完整", "可核验事件缺失"])
+        )
+        pipeline.db = MagicMock()
+        pipeline.save_context_snapshot = True
+        result = _make_result("SNDK")
+        result.query_id = "query-incomplete"
+
+        pipeline._send_single_stock_notification(result)
+
+        pipeline.notifier.send.assert_not_called()
+        kwargs = pipeline.db.update_analysis_history_diagnostics.call_args.kwargs
+        self.assertEqual(
+            kwargs["notification_runs"][-1]["status"],
+            "skipped_data_incomplete",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,7 +14,7 @@
 | Pushover | 静态配置 | `PUSHOVER_USER_KEY`, `PUSHOVER_API_TOKEN` | - | 两个 key 必须同时存在 |
 | ntfy | 静态配置 | `NTFY_URL` | `NTFY_TOKEN`, `WEBHOOK_VERIFY_SSL` | `NTFY_URL` 必须包含 topic path，例如 `https://ntfy.sh/my-topic` |
 | Gotify | 静态配置 | `GOTIFY_URL`, `GOTIFY_TOKEN` | `WEBHOOK_VERIFY_SSL` | `GOTIFY_URL` 是 server base URL，不包含 `/message`；token 通过 `X-Gotify-Key` Header 发送 |
-| PushPlus | 静态配置 | `PUSHPLUS_TOKEN` | `PUSHPLUS_TOPIC` | `PUSHPLUS_TOPIC` 仅在 token 存在时生效 |
+| PushPlus | 静态配置 | `PUSHPLUS_TOKEN` | `PUSHPLUS_TOPIC`, `PUSHPLUS_MAX_CHARS`, `PUSH_REPORT_MINIMUM_DATA_ENABLED` | 每份报告固定一次请求；核心证据不齐时仅在 WebUI 留档 |
 | Server酱3 | 静态配置 | `SERVERCHAN3_SENDKEY` | - | 手机 App 推送 |
 | 自定义 Webhook | 静态配置 | `CUSTOM_WEBHOOK_URLS` | `CUSTOM_WEBHOOK_BEARER_TOKEN`, `CUSTOM_WEBHOOK_BODY_TEMPLATE`, `WEBHOOK_VERIFY_SSL` | 支持多个 URL，逗号分隔 |
 | Discord | 静态配置 | `DISCORD_WEBHOOK_URL` 或 `DISCORD_BOT_TOKEN` + `DISCORD_MAIN_CHANNEL_ID` | `DISCORD_INTERACTIONS_PUBLIC_KEY` | Webhook 与 Bot 均可启用发送 |
@@ -54,7 +54,8 @@ PushPlus 是本节的明确例外：
 - PushPlus API 使用 HTTPS 和 `html` 模板。正文为 16px、卡片式行内样式；买入/风险/观察/数据缺口使用不同色块，表格在手机宽度内自适应换行。
 - 来源 URL 只保留在安全的 HTTP(S) `href` 中，手机正文显示新闻标题或“查看来源 ↗”，不再展示撑满屏幕的裸链接。
 - 大盘、模型复核和自选股分别使用“收盘复盘”“每日模型复核”“自选股研报”短标题。
-- 每页都按渲染后的最终 HTML 实测，使用 18KB 保守安全线；表格和强调样式膨胀后仍超限时会继续拆分，最终发送入口也会拒绝任何超限页，不再把“服务端验证错误”误判成限流后原样重发。
+- PushPlus 官方普通用户限制是 2 万“字符”，不是 UTF-8 字节。每份个股研报或大盘复盘始终只发送一次：优先使用 PPT 卡片 HTML，超限时切换低开销彩色 HTML，仍超限时使用单条 Markdown；若服务端仍判定过长，继续自动瘦身并重投，不因长度直接拒发。绝不再用 `1/3` 分页制造多条微信通知。
+- 个股正式推送执行最低证据契约：股票身份、当日 OHLC/前收盘/成交量、MA5/10/20、最新报告期与至少两项核心财务指标、带日期/来源/链接的可核验事件、持仓/空仓动作建议必须齐全；A 股还要求个股资金流。不达标的结果保留在 WebUI 和历史记录中供诊断，不伪装成正式投研报告推送。可用 `PUSH_REPORT_MINIMUM_DATA_ENABLED=false` 显式恢复宽松模式。
 - 发送器在同一个通知服务实例内共享五次/分钟滚动窗口；长报告的后续分页或紧随其后的消息会等待额度释放。只有 HTTP 429 或明确的频率/限流响应会等待窗口后重试一次。
 - PushPlus 接口采用异步投递：同步 `code=200` 只表示请求已受理，日志不会再把它表述为微信已最终送达。若需要程序自动核对最终投递状态，还需另行配置 PushPlus 开放接口 AccessKey 或可接收回调的公网地址。
 - 每日模型复核在启用 `ADAPTIVE_LEARNING_ENABLED` 时会追加“自主治理状态”：展示客观样本对应的自动限制系数和影子候选；影子候选只参与后续模拟验证，真实下单始终关闭。

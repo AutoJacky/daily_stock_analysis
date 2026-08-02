@@ -943,6 +943,85 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("600519", out)
 
     @mock.patch("src.notification.get_config")
+    def test_single_stock_push_readiness_rejects_missing_core_evidence(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config()
+        service = NotificationService()
+        result = AnalysisResult(
+            code="SNDK",
+            name="闪迪",
+            sentiment_score=25,
+            trend_prediction="看空",
+            operation_advice="减仓",
+            analysis_summary="数据缺失",
+            dashboard={
+                "core_conclusion": {"one_sentence": "数据缺失"},
+                "data_perspective": {"price_position": {}},
+                "intelligence": {},
+            },
+            market_snapshot={"date": "2026-08-01", "close": "N/A"},
+        )
+
+        ready, issues = service.evaluate_single_stock_push_readiness(result)
+
+        self.assertFalse(ready)
+        self.assertTrue(any("行情" in issue for issue in issues))
+        self.assertTrue(any("财务" in issue for issue in issues))
+        self.assertTrue(any("新闻/公告" in issue for issue in issues))
+
+    @mock.patch("src.notification.get_config")
+    def test_single_stock_push_readiness_accepts_complete_us_evidence(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config()
+        service = NotificationService()
+        result = AnalysisResult(
+            code="AAPL",
+            name="苹果",
+            sentiment_score=65,
+            trend_prediction="震荡",
+            operation_advice="持有观察",
+            analysis_summary="等待确认",
+            dashboard={
+                "core_conclusion": {
+                    "one_sentence": "估值与盈利需继续验证。",
+                    "position_advice": {
+                        "no_position": "等待突破确认。",
+                        "has_position": "持有并严守止损。",
+                    },
+                },
+                "data_perspective": {
+                    "price_position": {"ma5": 210, "ma10": 208, "ma20": 205}
+                },
+                "intelligence": {
+                    "verified_events": [{
+                        "published_date": "2026-08-01",
+                        "source": "SEC",
+                        "title": "Apple filing",
+                        "url": "https://www.sec.gov/example",
+                    }]
+                },
+            },
+            market_snapshot={
+                "date": "2026-08-01", "close": "211.00", "prev_close": "209.00",
+                "open": "209.50", "high": "212.00", "low": "208.00",
+                "volume": "50.00 M",
+            },
+        )
+        result.fundamental_context = {
+            "earnings": {"status": "ok", "data": {"financial_report": {
+                "report_date": "2026-06-30", "revenue": 100, "net_profit_parent": 20,
+            }}},
+            "growth": {"status": "ok", "data": {"revenue_yoy": 5.0}},
+        }
+
+        ready, issues = service.evaluate_single_stock_push_readiness(result)
+
+        self.assertTrue(ready)
+        self.assertEqual(issues, [])
+
+    @mock.patch("src.notification.get_config")
     def test_generate_brief_report_shows_model_by_default(self, mock_get_config: mock.MagicMock):
         mock_get_config.return_value = _make_config(report_renderer_enabled=False)
         service = NotificationService()
@@ -2259,7 +2338,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
     @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")
-    def test_send_to_pushplus_via_notification_service_requires_chunking(
+    def test_send_to_pushplus_via_notification_service_uses_one_request(
         self,
         mock_post: mock.MagicMock,
         mock_get_config: mock.MagicMock,
@@ -2275,7 +2354,10 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         ok = service.send("A" * 25000)
 
         self.assertTrue(ok)
-        self.assertGreaterEqual(mock_post.call_count, 2)
+        self.assertEqual(mock_post.call_count, 1)
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertIn(payload["template"], {"html", "markdown"})
+        self.assertNotIn("1/", payload["title"])
 
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")

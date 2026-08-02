@@ -1429,7 +1429,7 @@ class TestPushplusSender(unittest.TestCase):
 
     @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
     @mock.patch("src.notification_sender.pushplus_sender.requests.post")
-    def test_send_long_message_chunks_pushplus_requests(self, mock_post, _mock_sleep):
+    def test_send_long_message_uses_one_markdown_request(self, mock_post, _mock_sleep):
         mock_post.return_value = _response(200, {"code": 200})
         cfg = _config(pushplus_token="TOKEN")
         sender = PushplusSender(cfg)
@@ -1437,23 +1437,19 @@ class TestPushplusSender(unittest.TestCase):
         result = sender.send_to_pushplus("A" * 25000)
 
         self.assertTrue(result)
-        self.assertGreaterEqual(mock_post.call_count, 2)
-        for request in mock_post.call_args_list:
-            payload = request.kwargs["json"]
-            self.assertEqual(payload["template"], "html")
-            self.assertIn("<article", payload["content"])
-            self.assertLessEqual(
-                len(payload["content"].encode("utf-8")),
-                sender._pushplus_max_bytes,
-            )
+        self.assertEqual(mock_post.call_count, 1)
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertIn(payload["template"], {"html", "markdown"})
+        self.assertLessEqual(len(payload["content"]), sender._effective_html_limit())
+        self.assertNotIn("1/", payload["title"])
 
     @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
     @mock.patch("src.notification_sender.pushplus_sender.requests.post")
-    def test_chunking_preserves_markdown_source_link(self, mock_post, _mock_sleep):
+    def test_single_document_compaction_preserves_markdown_source_link(self, mock_post, _mock_sleep):
         mock_post.return_value = _response(200, {"code": 200})
         url = "https://www.sse.com.cn/disclosure/example?report=20260730"
         cfg = _config(pushplus_token="TOKEN")
-        cfg.pushplus_max_bytes = 3500
+        cfg.pushplus_max_chars = 3500
         sender = PushplusSender(cfg)
         content = (
             "# 大盘复盘\n\n"
@@ -1502,7 +1498,7 @@ class TestPushplusSender(unittest.TestCase):
 
     @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
     @mock.patch("src.notification_sender.pushplus_sender.requests.post")
-    def test_table_heavy_report_checks_final_html_after_every_resplit(
+    def test_table_heavy_report_stays_in_one_request(
         self,
         mock_post,
         _mock_sleep,
@@ -1536,21 +1532,77 @@ class TestPushplusSender(unittest.TestCase):
 
         self.assertTrue(sender.send_to_pushplus(content))
 
-        safe_max = int(sender._pushplus_max_bytes * 0.90)
-        self.assertGreaterEqual(mock_post.call_count, 2)
-        for request in mock_post.call_args_list:
-            html_page = request.kwargs["json"]["content"]
-            self.assertLessEqual(len(html_page.encode("utf-8")), safe_max)
+        self.assertEqual(mock_post.call_count, 1)
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertLessEqual(len(payload["content"]), sender._effective_html_limit())
+        self.assertNotIn("1/", payload["title"])
 
     @mock.patch("src.notification_sender.pushplus_sender.requests.post")
-    def test_impossibly_small_html_limit_fails_before_any_request(self, mock_post):
+    def test_small_html_limit_falls_back_to_one_compact_request(self, mock_post):
         cfg = _config(pushplus_token="TOKEN")
-        cfg.pushplus_max_bytes = 500
+        cfg.pushplus_max_chars = 500
         sender = PushplusSender(cfg)
+        mock_post.return_value = _response(200, {"code": 200})
 
-        self.assertFalse(sender.send_to_pushplus("# 大盘复盘\n\n明日计划"))
+        self.assertTrue(sender.send_to_pushplus("# 大盘复盘\n\n明日计划"))
 
-        mock_post.assert_not_called()
+        mock_post.assert_called_once()
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertIn(payload["template"], {"html", "markdown"})
+        self.assertLessEqual(len(payload["content"]), sender._effective_html_limit())
+
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    def test_internal_overflow_guard_compacts_instead_of_rejecting(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 200})
+        sender = PushplusSender(_config(pushplus_token="TOKEN"))
+
+        self.assertTrue(
+            sender._send_pushplus_message(
+                "https://www.pushplus.plus/send",
+                "<p>" + ("数据证据" * 8000) + "</p>",
+                "📈 超限兜底测试",
+                template="html",
+            )
+        )
+
+        mock_post.assert_called_once()
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["template"], "markdown")
+        self.assertLessEqual(len(payload["content"]), sender._effective_html_limit())
+
+    @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    def test_server_content_limit_retries_smaller_single_document(
+        self,
+        mock_post,
+        _mock_sleep,
+    ):
+        mock_post.side_effect = [
+            _response(200, {"code": 999, "msg": "内容长度超限"}),
+            _response(200, {"code": 200}),
+        ]
+        sender = PushplusSender(_config(pushplus_token="TOKEN"))
+
+        self.assertTrue(sender.send_to_pushplus("# 美股大盘复盘\n\n" + ("量化证据。" * 500)))
+
+        self.assertEqual(mock_post.call_count, 2)
+        first_payload = mock_post.call_args_list[0].kwargs["json"]
+        retry_payload = mock_post.call_args_list[1].kwargs["json"]
+        self.assertLess(len(retry_payload["content"]), len(first_payload["content"]))
+        self.assertEqual(retry_payload["template"], "markdown")
+        self.assertEqual(retry_payload["title"], first_payload["title"])
+
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    def test_single_stock_h2_title_includes_name_and_code(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 200})
+        sender = PushplusSender(_config(pushplus_token="TOKEN"))
+
+        self.assertTrue(sender.send_to_pushplus("## 🟠 闪迪 (SNDK)\n\n核心结论"))
+
+        title = mock_post.call_args.kwargs["json"]["title"]
+        self.assertIn("闪迪", title)
+        self.assertIn("SNDK", title)
+        self.assertNotIn("1/", title)
 
     @mock.patch("src.notification_sender.pushplus_sender.time.monotonic", return_value=100.0)
     @mock.patch("src.notification_sender.pushplus_sender.time.sleep")

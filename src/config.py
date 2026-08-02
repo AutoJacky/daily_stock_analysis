@@ -976,6 +976,8 @@ class Config:
     # PushPlus 推送配置
     pushplus_token: Optional[str] = None  # PushPlus Token
     pushplus_topic: Optional[str] = None  # PushPlus 群组编码（一对多推送）
+    pushplus_max_chars: int = 20000  # 官方普通用户单次内容上限（字符）
+    push_report_minimum_data_enabled: bool = True  # 核心数据不齐时不推送个股报告
 
     # Server酱3 推送配置
     serverchan3_sendkey: Optional[str] = None  # Server酱3 SendKey
@@ -1901,6 +1903,16 @@ class Config:
             gotify_token=os.getenv('GOTIFY_TOKEN'),
             pushplus_token=os.getenv('PUSHPLUS_TOKEN'),
             pushplus_topic=os.getenv('PUSHPLUS_TOPIC'),
+            pushplus_max_chars=parse_env_int(
+                os.getenv('PUSHPLUS_MAX_CHARS'),
+                20000,
+                field_name='PUSHPLUS_MAX_CHARS',
+                minimum=1000,
+            ),
+            push_report_minimum_data_enabled=parse_env_bool(
+                os.getenv('PUSH_REPORT_MINIMUM_DATA_ENABLED'),
+                default=True,
+            ),
             serverchan3_sendkey=os.getenv('SERVERCHAN3_SENDKEY'),
             custom_webhook_urls=[u.strip() for u in os.getenv('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],
             custom_webhook_bearer_token=os.getenv('CUSTOM_WEBHOOK_BEARER_TOKEN'),

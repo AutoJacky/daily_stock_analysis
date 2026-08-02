@@ -2351,6 +2351,30 @@ class NotificationService(
         if info_added:
             lines.append("")
 
+        # Verifiable event evidence is kept separate from model prose.  This
+        # mirrors professional research's fact/thesis separation and gives the
+        # reader a dated source link without exposing long raw URLs.
+        verified_events = intel.get('verified_events', []) if intel else []
+        valid_events = []
+        for event in verified_events if isinstance(verified_events, list) else []:
+            if not isinstance(event, dict):
+                continue
+            published = str(event.get('published_date') or '').strip()
+            source = str(event.get('source') or '').strip()
+            title = str(event.get('title') or '').strip()
+            url = str(event.get('url') or '').strip()
+            if published and source and title and url.lower().startswith(('http://', 'https://')):
+                valid_events.append((published, source, title, url))
+        if valid_events:
+            lines.extend(["### 📡 最新动态（已核验）", ""])
+            for published, source, title, url in valid_events[:3]:
+                safe_title = title.replace('[', '［').replace(']', '］')
+                safe_source = source.replace('[', '［').replace(']', '］')
+                lines.append(f"- **{published} · {safe_source}** [{safe_title}]({url})")
+            lines.append("")
+
+        self._append_capital_evidence_summary(lines, result)
+
         # 狙击点位
         sniper = battle.get('sniper_points', {}) if battle else {}
         if sniper:
@@ -2419,6 +2443,192 @@ class NotificationService(
         lines.append(f"*{labels['not_investment_advice']}*")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _push_value_available(value: Any) -> bool:
+        """Whether a value is usable as deterministic push evidence."""
+
+        if value is None:
+            return False
+        if isinstance(value, float) and value != value:
+            return False
+        if isinstance(value, str):
+            text = value.strip().lower()
+            return bool(text) and text not in {
+                "n/a", "na", "none", "null", "unknown", "未知", "--", "-",
+            } and not any(
+                marker in text
+                for marker in ("数据缺失", "暂不可用", "无法判断")
+            )
+        return True
+
+    def evaluate_single_stock_push_readiness(
+        self,
+        result: AnalysisResult,
+    ) -> Tuple[bool, List[str]]:
+        """Apply the pre-delivery minimum evidence contract.
+
+        Analysis/history persistence remains fail-open so an incomplete run is
+        diagnosable in WebUI.  WeChat delivery is fail-closed: identity, daily
+        quote, technical position, structured financials, verified events and
+        an executable action card must all be present.  A-share reports also
+        require actual stock-level capital-flow values because that dataset is
+        supported for that market; unsupported offshore real-time retail/
+        institutional splits are never fabricated.
+        """
+
+        if not getattr(self._config, 'push_report_minimum_data_enabled', True):
+            return True, []
+
+        issues: List[str] = []
+        code = str(getattr(result, 'code', '') or '').strip()
+        name = str(getattr(result, 'name', '') or '').strip()
+        if not code or not name or name in {f"股票{code}", code}:
+            issues.append("股票名称或代码未确认")
+
+        snapshot = (
+            result.market_snapshot
+            if isinstance(getattr(result, 'market_snapshot', None), dict)
+            else {}
+        )
+        quote_fields = ('date', 'close', 'prev_close', 'open', 'high', 'low', 'volume')
+        if any(not self._push_value_available(snapshot.get(key)) for key in quote_fields):
+            issues.append("当日行情 OHLC/前收盘/成交量不完整")
+
+        dashboard = (
+            result.dashboard
+            if isinstance(getattr(result, 'dashboard', None), dict)
+            else {}
+        )
+        data_perspective = (
+            dashboard.get('data_perspective')
+            if isinstance(dashboard.get('data_perspective'), dict)
+            else {}
+        )
+        price_position = (
+            data_perspective.get('price_position')
+            if isinstance(data_perspective.get('price_position'), dict)
+            else {}
+        )
+        if any(
+            not self._push_value_available(price_position.get(key))
+            for key in ('ma5', 'ma10', 'ma20')
+        ):
+            issues.append("MA5/MA10/MA20 技术基线不完整")
+
+        blocks = self._get_fundamental_blocks(result)
+        financial = blocks.get('financial_report') or {}
+        growth = blocks.get('growth') or {}
+        financial_metrics = (
+            financial.get('revenue'),
+            financial.get('net_profit_parent'),
+            financial.get('operating_cash_flow'),
+            financial.get('roe'),
+            growth.get('revenue_yoy'),
+            growth.get('net_profit_yoy'),
+        )
+        if (
+            not self._push_value_available(financial.get('report_date'))
+            or sum(self._push_value_available(value) for value in financial_metrics) < 2
+        ):
+            issues.append("最新报告期及核心财务指标不完整")
+
+        intelligence = (
+            dashboard.get('intelligence')
+            if isinstance(dashboard.get('intelligence'), dict)
+            else {}
+        )
+        events = intelligence.get('verified_events')
+        has_verified_event = any(
+            isinstance(event, dict)
+            and all(
+                self._push_value_available(event.get(key))
+                for key in ('published_date', 'source', 'title', 'url')
+            )
+            and str(event.get('url')).lower().startswith(('http://', 'https://'))
+            for event in (events if isinstance(events, list) else [])
+        )
+        if not has_verified_event:
+            issues.append("近期新闻/公告缺少日期、来源和可访问链接")
+
+        core = (
+            dashboard.get('core_conclusion')
+            if isinstance(dashboard.get('core_conclusion'), dict)
+            else {}
+        )
+        position_advice = (
+            core.get('position_advice')
+            if isinstance(core.get('position_advice'), dict)
+            else {}
+        )
+        if (
+            not self._push_value_available(core.get('one_sentence'))
+            or not self._push_value_available(getattr(result, 'operation_advice', None))
+            or not self._push_value_available(position_advice.get('no_position'))
+            or not self._push_value_available(position_advice.get('has_position'))
+        ):
+            issues.append("持仓/空仓行动建议不完整")
+
+        from src.core.trading_calendar import get_market_for_stock
+        if get_market_for_stock(code) == 'cn':
+            context = (
+                result.fundamental_context
+                if isinstance(getattr(result, 'fundamental_context', None), dict)
+                else {}
+            )
+            flow_block = context.get('capital_flow') if isinstance(context.get('capital_flow'), dict) else {}
+            flow_data = flow_block.get('data') if isinstance(flow_block.get('data'), dict) else {}
+            stock_flow = flow_data.get('stock_flow') if isinstance(flow_data.get('stock_flow'), dict) else {}
+            if not any(
+                self._push_value_available(stock_flow.get(key))
+                for key in ('main_net_inflow', 'inflow_5d', 'inflow_10d')
+            ):
+                issues.append("A 股个股资金流数据不完整")
+
+        return not issues, issues
+
+    def _append_capital_evidence_summary(
+        self,
+        lines: List[str],
+        result: AnalysisResult,
+    ) -> None:
+        """Append market-appropriate capital evidence without invented flows."""
+
+        context = (
+            result.fundamental_context
+            if isinstance(getattr(result, 'fundamental_context', None), dict)
+            else {}
+        )
+        capital = context.get('capital_flow') if isinstance(context.get('capital_flow'), dict) else {}
+        capital_data = capital.get('data') if isinstance(capital.get('data'), dict) else {}
+        stock_flow = capital_data.get('stock_flow') if isinstance(capital_data.get('stock_flow'), dict) else {}
+        institution = context.get('institution') if isinstance(context.get('institution'), dict) else {}
+        institution_data = institution.get('data') if isinstance(institution.get('data'), dict) else {}
+
+        if any(self._push_value_available(value) for value in stock_flow.values()):
+            lines.extend([
+                "### 💰 资金与机构证据",
+                "",
+                f"- 主力净流入：**{stock_flow.get('main_net_inflow', 'N/A')}**",
+                f"- 5日 / 10日净流入：**{stock_flow.get('inflow_5d', 'N/A')} / {stock_flow.get('inflow_10d', 'N/A')}**",
+                "- 口径：资金流只作为价格与量能的过滤器，不单独触发买入。",
+                "",
+            ])
+        elif institution.get('status') == 'ok' and institution_data:
+            lines.extend([
+                "### 💰 资金与机构证据",
+                "",
+                f"- 资料日期 / 来源：**{institution_data.get('date', 'N/A')} / {institution_data.get('source', 'N/A')}**",
+                f"- 外资 / 投信 / 自营商净额：**{institution_data.get('foreign_net', 'N/A')} / {institution_data.get('trust_net', 'N/A')} / {institution_data.get('dealer_net', 'N/A')}**",
+                "",
+            ])
+        else:
+            lines.extend([
+                "### 💰 资金与机构证据",
+                "",
+                "> 当前市场无可核验的实时散户/机构拆分口径；不用成交量或媒体描述冒充机构流向。",
+                "",
+            ])
 
     # Display name mapping for realtime data sources
     _SOURCE_DISPLAY_NAMES = {

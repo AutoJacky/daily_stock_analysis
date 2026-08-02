@@ -3340,6 +3340,41 @@ class StockAnalysisPipeline:
             return
 
         stock_code = getattr(result, "code", None) or fallback_code or "unknown"
+        readiness_checker = getattr(
+            self.notifier,
+            "evaluate_single_stock_push_readiness",
+            None,
+        )
+        if callable(readiness_checker):
+            ready, readiness_issues = readiness_checker(result)
+            if not ready:
+                reason = "；".join(readiness_issues)
+                logger.warning(
+                    "[%s] 个股报告未达正式推送标准，仅保留 WebUI/历史记录：%s",
+                    stock_code,
+                    reason,
+                )
+                notification_run = self._build_notification_run_snapshot(
+                    channel="report",
+                    status="skipped_data_incomplete",
+                    success=False,
+                    attempts=0,
+                    error_message=reason,
+                )
+                record_notification_run(
+                    channel="report",
+                    status="skipped_data_incomplete",
+                    success=False,
+                    attempts=0,
+                    error_message=reason,
+                )
+                self._refresh_saved_diagnostic_snapshot(
+                    result=result,
+                    fallback_code=fallback_code,
+                    notification_run=notification_run,
+                )
+                return
+
         notify_lock = getattr(self, "_single_stock_notify_lock", None)
         if notify_lock is None:
             with _SINGLE_STOCK_NOTIFY_LOCK_INIT_GUARD:
