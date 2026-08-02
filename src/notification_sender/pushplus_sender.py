@@ -123,7 +123,15 @@ class PushplusSender:
 
         date_str = datetime.now().strftime("%m-%d")
         title_probe = (content or "")[:1200]
+        if "A股复盘·自选决策" in title_probe:
+            return f"🎯 A股自选决策 · {date_str}"
+        if "美股复盘·自选决策" in title_probe:
+            return f"🎯 美股自选决策 · {date_str}"
         if "大盘复盘" in title_probe or "市场复盘" in title_probe:
+            if "美股" in title_probe:
+                return f"📊 美股收盘复盘 · {date_str}"
+            if "A股" in title_probe:
+                return f"📊 A股收盘复盘 · {date_str}"
             return f"📊 收盘复盘 · {date_str}"
         if any(token in title_probe for token in ("模型复核", "预测复核", "置信度校准")):
             return f"🧭 每日模型复核 · {date_str}"

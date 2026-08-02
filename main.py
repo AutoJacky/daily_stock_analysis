@@ -484,6 +484,52 @@ def _compute_trading_day_filter(
     return (filtered_codes, effective_region, should_skip_all)
 
 
+def _filter_stock_codes_for_market(
+    stock_codes: List[str],
+    market_filter: Optional[str] = None,
+) -> List[str]:
+    """Restrict a scheduled stock batch to one market.
+
+    A-share and US close jobs share the same cloud ``STOCK_LIST``.  Without an
+    explicit split, the US job either has to skip every stock or repeats the
+    full A-share batch.  Manual/local runs remain unchanged when the filter is
+    empty.
+    """
+
+    normalized_filter = (
+        market_filter
+        if market_filter is not None
+        else os.getenv("STOCK_MARKET_FILTER", "")
+    ).strip().lower()
+    if not normalized_filter:
+        return list(stock_codes)
+
+    allowed = {
+        item.strip()
+        for item in normalized_filter.split(",")
+        if item.strip() in {"cn", "hk", "us", "jp", "kr", "tw"}
+    }
+    if not allowed:
+        logger.warning(
+            "STOCK_MARKET_FILTER=%r 无有效市场，为避免重复推送本轮跳过个股。",
+            normalized_filter,
+        )
+        return []
+
+    from src.core.trading_calendar import get_market_for_stock
+
+    filtered = [
+        code for code in stock_codes if get_market_for_stock(code) in allowed
+    ]
+    logger.info(
+        "个股按市场分流: market=%s selected=%d total=%d",
+        ",".join(sorted(allowed)),
+        len(filtered),
+        len(stock_codes),
+    )
+    return filtered
+
+
 def _run_market_review_with_shared_lock(
     config: Config,
     run_market_review_func: Callable[..., Any],
@@ -921,6 +967,7 @@ def run_full_analysis(
 
         # Issue #373: Trading day filter (per-stock, per-market)
         effective_codes = stock_codes if stock_codes is not None else config.stock_list
+        effective_codes = _filter_stock_codes_for_market(effective_codes)
         filtered_codes, effective_region, should_skip = _compute_trading_day_filter(
             config, args, effective_codes
         )

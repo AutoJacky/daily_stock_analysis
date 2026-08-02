@@ -1036,6 +1036,10 @@ class Config:
     # 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、both(全部市场)
     market_review_region: str = "cn"
     market_review_color_scheme: str = "green_up"
+    # A-share breadth providers occasionally hang on cloud runners. Bound each
+    # provider independently so one optional breadth source cannot cancel the
+    # complete market recap and the following stock batch.
+    market_stats_provider_timeout_seconds: float = 12.0
     # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
     trading_day_check_enabled: bool = True
 
@@ -2004,6 +2008,13 @@ class Config:
             ),
             market_review_color_scheme=cls._parse_market_review_color_scheme(
                 os.getenv('MARKET_REVIEW_COLOR_SCHEME', 'green_up')
+            ),
+            market_stats_provider_timeout_seconds=parse_env_float(
+                os.getenv('MARKET_STATS_PROVIDER_TIMEOUT_SECONDS'),
+                12.0,
+                field_name='MARKET_STATS_PROVIDER_TIMEOUT_SECONDS',
+                minimum=1.0,
+                maximum=60.0,
             ),
             trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',

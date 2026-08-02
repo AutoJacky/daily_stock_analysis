@@ -702,6 +702,10 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("自选股1（600000）", digest)
         self.assertIn("自选股34（600033）", digest)
         self.assertIn("一分钟看懂", digest)
+        self.assertIn("A股复盘·自选决策", digest)
+        self.assertIn("模型动作", digest)
+        self.assertIn("持有者", digest)
+        self.assertIn("财报与估值", digest)
         self.assertIn("你现在怎么做", digest)
         self.assertIn("数据可信度", digest)
         self.assertIn("全部自选，一眼分组", digest)
@@ -748,6 +752,25 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         )
         self.assertIn("000001", digest)
         self.assertIn("不得把缺失结果理解为“中性”", digest)
+
+    def test_pushplus_digest_labels_us_companion_report(self):
+        service = NotificationService()
+        result = AnalysisResult(
+            code="AMD",
+            name="AMD",
+            sentiment_score=55,
+            trend_prediction="range",
+            operation_advice="hold",
+            confidence_level="medium",
+        )
+
+        digest = service.generate_pushplus_digest(
+            [result],
+            requested_codes=["AMD"],
+        )
+
+        self.assertIn("美股复盘·自选决策", digest)
+        self.assertIn("持有者保持/观察", digest)
 
     def test_pushplus_digest_reports_all_failed_run(self):
         service = NotificationService()

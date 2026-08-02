@@ -282,7 +282,7 @@ def _pushplus_highlight_strong(match: re.Match) -> str:
         )
     elif any(
         word in plain
-        for word in ("结论", "核心", "策略", "计划", "重点", "建议", "怎么做")
+        for word in ("结论", "核心", "策略", "计划", "重点", "建议", "动作", "怎么做")
     ):
         style += (
             "display:inline-block;background:#dbeafe;color:#174ea6;"
@@ -346,7 +346,10 @@ def _pushplus_semantic_paragraph(match: re.Match) -> str:
     palette = None
     if any(word in plain[:28] for word in ("风险", "警报", "失效", "数据缺口")):
         palette = ("#fff1f3", "#e11d48")
-    elif any(word in plain[:28] for word in ("一句话结论", "核心结论", "你现在怎么做")):
+    elif any(
+        word in plain[:28]
+        for word in ("一句话结论", "核心结论", "模型动作", "你现在怎么做")
+    ):
         palette = ("#eff6ff", "#2563eb")
     elif any(word in plain[:28] for word in ("机会观察", "买入候选", "加仓")):
         palette = ("#fff4ed", "#f04438")

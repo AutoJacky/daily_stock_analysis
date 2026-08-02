@@ -479,6 +479,8 @@ daily_stock_analysis/
 | `DAILY_MARKET_CONTEXT_ENABLED` | 将当日大盘环境摘要注入个股分析 Prompt，并在高风险/退潮环境下软化激进买入建议；默认开启，设为 `false` 后仍可运行大盘复盘 | `true` |
 | `MARKET_REVIEW_REGION` | 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、jp(日股)、kr(韩股)、both(五市场)或逗号子集；仓库 GitHub Actions 的收盘任务会在 A 股/美股各自时点覆盖为单市场，避免重复和未收盘数据 | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | 大盘复盘指数涨跌颜色：`green_up`=绿涨红跌（默认），`red_up`=红涨绿跌 | `green_up` |
+| `MARKET_STATS_PROVIDER_TIMEOUT_SECONDS` | A 股市场宽度每个数据源的硬超时；超时只降级该供应商并继续换源，不得卡死大盘和个股推送 | `12` |
+| `STOCK_MARKET_FILTER` | 限制本轮个股市场（`cn/us/hk/jp/kr/tw`，可逗号分隔）；留空时不过滤。默认 Actions 会为 A 股/美股收盘任务自动设为 `cn`/`us` | 空 |
 | `TRADING_DAY_CHECK_ENABLED` | 交易日检查：默认 `true`，非交易日跳过执行；设为 `false` 或使用 `--force-run` 可强制执行（Issue #373） | `true` |
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
 | `SCHEDULE_TIME` | 定时执行时间 | `18:00` |
@@ -730,6 +732,12 @@ OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND
 ## 定时任务配置
 
 ### GitHub Actions 定时
+
+仓库默认安排两个独立收盘批次：A 股批次在北京时间 15:10 后先推送 A 股大盘复盘，再推送自选中 A 股的行动清单；美股批次在 21:15 UTC 先推送美股大盘复盘，再推送自选中美股的行动清单。两个批次共用一份 `STOCK_LIST`，由 workflow 通过 `STOCK_MARKET_FILTER` 自动分流，不需要维护两份自选。
+
+个股行动清单是同市场大盘复盘的配套报告，按“持有者/未持有者”分别给出条件加仓、持有/观望、减仓/回避等模型动作，并显示价量、财报估值、公告事件、市场环境和数据质量护栏。它是可审计的条件信号，不是自动下单或收益保证。所谓外部基金公开信息只能用于研究主题和风险因子；13F 只披露季末持仓，不披露专有模型、实时交易或风险参数，因此系统不会伪装成“复制”私有基金模板。
+
+> GitHub 官方将 schedule 视为尽力调度；平台高负载时可能晚于 cron 时点启动。数据源硬超时能防止应用内部无限卡住，但不能将 GitHub 的尽力调度变成分钟级 SLA。
 
 编辑 `.github/workflows/00-daily-analysis.yml`:
 

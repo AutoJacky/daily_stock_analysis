@@ -133,6 +133,14 @@ def get_market_for_stock(code: str) -> Optional[str]:
         return None
     code = (code or "").strip().upper()
 
+    # STOCK_LIST accepts exchange-qualified A-share codes (601398.SH,
+    # SZ.002304, etc.).  Normalize those aliases before market inference so
+    # scheduled market splitting and holiday filtering do not treat them as
+    # unknown/fail-open symbols.
+    from src.services.stock_code_utils import normalize_code
+
+    code = normalize_code(code) or code
+
     from data_provider import is_us_stock_code, is_us_index_code, is_hk_stock_code
 
     if is_us_stock_code(code) or is_us_index_code(code):

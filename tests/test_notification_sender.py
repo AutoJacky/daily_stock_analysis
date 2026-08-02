@@ -1413,6 +1413,17 @@ class TestPushplusSender(unittest.TestCase):
 
         self.assertIn("收盘复盘", mock_post.call_args.kwargs["json"]["title"])
 
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    def test_market_specific_mobile_titles_are_distinct(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 200})
+        sender = PushplusSender(_config(pushplus_token="TOKEN"))
+
+        self.assertTrue(sender.send_to_pushplus("# 📊 A股复盘·自选决策"))
+        self.assertIn("A股自选决策", mock_post.call_args.kwargs["json"]["title"])
+
+        self.assertTrue(sender.send_to_pushplus("# 📊 美股大盘复盘"))
+        self.assertIn("美股收盘复盘", mock_post.call_args.kwargs["json"]["title"])
+
     @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
     @mock.patch("src.notification_sender.pushplus_sender.requests.post")
     def test_send_long_message_chunks_pushplus_requests(self, mock_post, _mock_sleep):

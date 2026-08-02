@@ -319,11 +319,13 @@ def test_us_prompt_requires_policy_earnings_sources_and_fact_inference_separatio
     assert "禁止写成交易所全市场涨跌家数" in prompt
 
 
-def test_workflow_has_separate_us_close_market_only_schedule():
+def test_workflow_has_separate_us_close_full_market_filtered_schedule():
     # pathlib keeps this assertion independent from a YAML parser dependency.
     from pathlib import Path
 
     text = Path(".github/workflows/00-daily-analysis.yml").read_text(encoding="utf-8")
     assert "cron: '15 21 * * 1-5'" in text
-    assert 'MODE="market-only"' in text
+    assert 'MODE="full"' in text
     assert 'export MARKET_REVIEW_REGION="us"' in text
+    assert 'export STOCK_MARKET_FILTER="us"' in text
+    assert 'export STOCK_MARKET_FILTER="cn"' in text

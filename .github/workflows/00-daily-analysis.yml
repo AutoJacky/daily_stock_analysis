@@ -434,6 +434,8 @@ jobs:
           # 基本面需先取估值再拉财报，云端网络下默认 8 秒容易只剩约 2 秒给财报。
           FUNDAMENTAL_STAGE_TIMEOUT_SECONDS: ${{ vars.FUNDAMENTAL_STAGE_TIMEOUT_SECONDS || secrets.FUNDAMENTAL_STAGE_TIMEOUT_SECONDS || '30' }}
           FUNDAMENTAL_FETCH_TIMEOUT_SECONDS: ${{ vars.FUNDAMENTAL_FETCH_TIMEOUT_SECONDS || secrets.FUNDAMENTAL_FETCH_TIMEOUT_SECONDS || '12' }}
+          # A股市场宽度供应商单次调用硬超时，避免一个外部接口卡死整轮推送。
+          MARKET_STATS_PROVIDER_TIMEOUT_SECONDS: ${{ vars.MARKET_STATS_PROVIDER_TIMEOUT_SECONDS || secrets.MARKET_STATS_PROVIDER_TIMEOUT_SECONDS || '12' }}
           # 筹码分布：默认 false（云端接口不稳定）；需启用时在 Settings → Variables 添加 ENABLE_CHIP_DISTRIBUTION=true
           ENABLE_CHIP_DISTRIBUTION: ${{ vars.ENABLE_CHIP_DISTRIBUTION || secrets.ENABLE_CHIP_DISTRIBUTION || 'false' }}
           # 实时行情数据源优先级（腾讯有量比且稳定，推荐首选）
@@ -465,13 +467,15 @@ jobs:
           # 判断运行模式
           MODE="${{ github.event.inputs.mode || 'full' }}"
           if [ "${SCHEDULE_EXPRESSION:-}" = "10 7 * * 1-5" ]; then
-            # A股收盘任务：运行自选股与A股复盘，避免重复推送上一交易日美股报告。
+            # A股收盘任务：先推A股复盘，再分析自选中的A股。
             MODE="full"
             export MARKET_REVIEW_REGION="cn"
+            export STOCK_MARKET_FILTER="cn"
           elif [ "${SCHEDULE_EXPRESSION:-}" = "15 21 * * 1-5" ]; then
-            # 美股收盘任务：仅运行美股大盘复盘，不重复分析34只自选股。
-            MODE="market-only"
+            # 美股收盘任务：先推美股复盘，再分析自选中的美股。
+            MODE="full"
             export MARKET_REVIEW_REGION="us"
+            export STOCK_MARKET_FILTER="us"
           fi
           
           echo "=========================================="

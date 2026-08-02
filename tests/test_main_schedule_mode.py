@@ -191,6 +191,22 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(effective_region, "jp,kr")
         self.assertFalse(should_skip_all)
 
+    def test_scheduled_market_filter_splits_shared_stock_list(self) -> None:
+        stock_codes = ["600519", "601398.SH", "AMD", "AAPL"]
+
+        self.assertEqual(
+            main._filter_stock_codes_for_market(stock_codes, "cn"),
+            ["600519", "601398.SH"],
+        )
+        self.assertEqual(
+            main._filter_stock_codes_for_market(stock_codes, "us"),
+            ["AMD", "AAPL"],
+        )
+        self.assertEqual(
+            main._filter_stock_codes_for_market(stock_codes, ""),
+            stock_codes,
+        )
+
     def test_public_webui_bind_warns_when_auth_is_disabled(self) -> None:
         with patch("src.auth.is_auth_enabled", return_value=False), \
              patch("main.logger.warning") as warning_log:

@@ -1961,6 +1961,17 @@ class NotificationService(
             suffix = f"等{len(items)}只" if len(items) > limit else ""
             return "、".join(names) + suffix
 
+        def _action_guidance(result: AnalysisResult) -> str:
+            bucket = display_decision_type_for_result(
+                result,
+                report_language=report_language,
+            )
+            if bucket == "buy":
+                return "🟠 持有者条件加仓｜未持有者等触发后分批建仓"
+            if bucket == "sell":
+                return "🔴 持有者评估减仓｜未持有者暂时回避"
+            return "🟡 持有者保持/观察｜未持有者等待确认"
+
         decision_groups: Dict[str, List[AnalysisResult]] = {
             "buy": [],
             "hold": [],
@@ -1999,9 +2010,24 @@ class NotificationService(
             results,
             report_language,
         )
+        from src.core.trading_calendar import get_market_for_stock
+
+        market_codes = requested_codes or [
+            str(getattr(result, "code", "") or "") for result in results
+        ]
+        report_markets = {
+            market
+            for market in (get_market_for_stock(code) for code in market_codes)
+            if market
+        }
+        market_label = (
+            "A股" if report_markets == {"cn"}
+            else "美股" if report_markets == {"us"}
+            else "多市场"
+        )
         requested_count = len(requested_codes) or len(results) + len(failed_items)
         lines = [
-            f"# 📊 每日投资决策卡 · {report_date}",
+            f"# 📊 {market_label}复盘·自选决策 · {report_date}",
             "",
             "## ⏱ 一分钟看懂",
             "",
@@ -2019,6 +2045,12 @@ class NotificationService(
             "",
             "> 阅读顺序：先看红色风险，再看“你现在怎么做”和“明天只盯”。"
             "数据缺失的股票不能作为交易依据。",
+            "",
+            (
+                f"> 这是与当日{market_label}大盘复盘配套的个股行动清单："
+                "综合价格/成交量、财报与估值、公告/新闻事件、"
+                "市场环境与数据质量护栏；任一核心证据缺失时只能降级结论。"
+            ),
         ]
         if focus:
             lines.extend(
@@ -2054,6 +2086,7 @@ class NotificationService(
                         f"**一句话结论：** {signal_text}｜综合分 {score}/100"
                         f"｜证据置信度 {confidence}"
                     ),
+                    f"**模型动作：** {_action_guidance(result)}",
                     f"**你现在怎么做：** {immediate_action}",
                 ]
             )

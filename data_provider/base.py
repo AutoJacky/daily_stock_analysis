@@ -681,6 +681,12 @@ class DataFetcherManager:
             self._stock_name_cache = {}
         if not hasattr(self, "_stock_name_cache_lock") or self._stock_name_cache_lock is None:
             self._stock_name_cache_lock = RLock()
+        if not hasattr(self, "_fundamental_timeout_worker_limit"):
+            self._fundamental_timeout_worker_limit = 8
+        if not hasattr(self, "_fundamental_timeout_slots") or self._fundamental_timeout_slots is None:
+            self._fundamental_timeout_slots = BoundedSemaphore(
+                self._fundamental_timeout_worker_limit
+            )
 
     def _get_fetchers_snapshot(self) -> List[BaseFetcher]:
         self._ensure_concurrency_guards()
@@ -2513,12 +2519,31 @@ class DataFetcherManager:
     def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""
         logger.info("[MarketStats] component=market_stats action=start purpose=%s", purpose)
+        self._ensure_concurrency_guards()
+        config = self._get_fundamental_config()
+        provider_timeout = max(
+            0.01,
+            min(
+                60.0,
+                float(
+                    getattr(config, "market_stats_provider_timeout_seconds", 12.0)
+                    or 12.0
+                ),
+            ),
+        )
+
+        def call_provider(fetcher: BaseFetcher, provider_name: str) -> Tuple[Any, Optional[str], float]:
+            result, error, duration_ms = self._run_with_timeout(
+                lambda: fetcher.get_market_stats(),
+                provider_timeout,
+                f"market_stats:{provider_name}",
+            )
+            return result, error, duration_ms / 1000.0
+
         tickflow_fetcher = self._get_tickflow_fetcher()
         if tickflow_fetcher is not None:
-            started_at = time.monotonic()
-            try:
-                data = tickflow_fetcher.get_market_stats()
-                elapsed = time.monotonic() - started_at
+            data, error, elapsed = call_provider(tickflow_fetcher, "TickFlowFetcher")
+            if error is None:
                 if data:
                     logger.info(
                         "[MarketStats] component=market_stats action=provider_success "
@@ -2533,23 +2558,20 @@ class DataFetcherManager:
                     purpose,
                     elapsed,
                 )
-            except Exception as e:
-                elapsed = time.monotonic() - started_at
+            else:
                 logger.warning(
                     "[MarketStats] component=market_stats action=provider_failed "
                     "purpose=%s provider=TickFlowFetcher elapsed=%.2fs error=%s",
                     purpose,
                     elapsed,
-                    e,
+                    error,
                 )
 
-        for fetcher in self._fetchers:
+        for fetcher in self._get_fetchers_snapshot():
             if fetcher.name == "TickFlowFetcher":
                 continue
-            started_at = time.monotonic()
-            try:
-                data = fetcher.get_market_stats()
-                elapsed = time.monotonic() - started_at
+            data, error, elapsed = call_provider(fetcher, fetcher.name)
+            if error is None:
                 if data:
                     logger.info(
                         "[MarketStats] component=market_stats action=provider_success "
@@ -2566,17 +2588,15 @@ class DataFetcherManager:
                     fetcher.name,
                     elapsed,
                 )
-            except Exception as e:
-                elapsed = time.monotonic() - started_at
+            else:
                 logger.warning(
                     "[MarketStats] component=market_stats action=provider_failed "
                     "purpose=%s provider=%s elapsed=%.2fs error=%s",
                     purpose,
                     fetcher.name,
                     elapsed,
-                    e,
+                    error,
                 )
-                continue
         logger.warning("[MarketStats] component=market_stats action=complete status=empty purpose=%s", purpose)
         return {}
 

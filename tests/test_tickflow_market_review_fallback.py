@@ -3,6 +3,7 @@
 
 import os
 import sys
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -119,6 +120,40 @@ class TestTickFlowMarketReviewFallback(unittest.TestCase):
 
         self.assertEqual(data["up_count"], 1)
         self.assertEqual(fallback.stats_calls, 1)
+
+    @patch("src.config.get_config")
+    def test_manager_times_out_hung_market_stats_provider_and_falls_back(
+        self, mock_get_config
+    ):
+        mock_get_config.return_value = SimpleNamespace(
+            tickflow_api_key=None,
+            market_stats_provider_timeout_seconds=0.01,
+        )
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+
+        class _HungFetcher(_DummyFetcher):
+            def get_market_stats(self):
+                self.stats_calls += 1
+                time.sleep(0.2)
+                return None
+
+        hung = _HungFetcher("AkshareFetcher")
+        fallback = _DummyFetcher(
+            "TencentFetcher",
+            stats={"up_count": 3, "down_count": 1, "flat_count": 0},
+        )
+        manager._fetchers = [hung, fallback]
+
+        started_at = time.monotonic()
+        data = DataFetcherManager.get_market_stats(
+            manager,
+            purpose="market_review:cn",
+        )
+
+        self.assertEqual(data["up_count"], 3)
+        self.assertEqual(hung.stats_calls, 1)
+        self.assertEqual(fallback.stats_calls, 1)
+        self.assertLess(time.monotonic() - started_at, 0.15)
 
     @patch("src.config.get_config")
     def test_manager_skips_tickflow_without_api_key(self, mock_get_config):
