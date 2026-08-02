@@ -2546,6 +2546,26 @@ class SearchService:
         """Build a cache key from query parameters."""
         return f"{query}|{max_results}|{days}"
 
+    def invalidate_stock_search_cache(self, stock_code: str, stock_name: str = "") -> int:
+        """Drop cached searches for one stock before a self-heal retrieval pass."""
+
+        terms = {
+            str(stock_code or "").strip().lower(),
+            str(stock_name or "").strip().lower(),
+        }
+        terms.discard("")
+        if not terms:
+            return 0
+        with self._cache_lock:
+            keys = [
+                key
+                for key in self._cache
+                if any(term in key.lower() for term in terms)
+            ]
+            for key in keys:
+                self._cache.pop(key, None)
+        return len(keys)
+
     def _get_cached_locked(self, key: str) -> Optional['SearchResponse']:
         entry = self._cache.get(key)
         if entry is None:

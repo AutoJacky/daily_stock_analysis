@@ -691,6 +691,10 @@ class DataFetcherManager:
             self._stock_name_cache = {}
         if not hasattr(self, "_stock_name_cache_lock") or self._stock_name_cache_lock is None:
             self._stock_name_cache_lock = RLock()
+        if not hasattr(self, "_fundamental_cache") or self._fundamental_cache is None:
+            self._fundamental_cache = {}
+        if not hasattr(self, "_fundamental_cache_lock") or self._fundamental_cache_lock is None:
+            self._fundamental_cache_lock = RLock()
         if not hasattr(self, "_fundamental_timeout_worker_limit"):
             self._fundamental_timeout_worker_limit = 8
         if not hasattr(self, "_fundamental_timeout_slots") or self._fundamental_timeout_slots is None:
@@ -981,6 +985,40 @@ class DataFetcherManager:
                 )
                 for key, _ in sorted_items[:overflow]:
                     self._fundamental_cache.pop(key, None)
+
+    def invalidate_stock_caches(self, stock_code: str) -> Dict[str, int]:
+        """Invalidate stock-scoped caches before an evidence repair attempt.
+
+        This deliberately leaves provider circuit-breaker health intact: a
+        self-heal pass should try alternative sources, not hammer a provider
+        that has already failed repeatedly.
+        """
+
+        normalized = normalize_stock_code(stock_code)
+        removed = {"fundamental": 0, "stock_name": 0}
+        self._ensure_concurrency_guards()
+
+        with self._fundamental_cache_lock:
+            keys = [
+                key
+                for key in self._fundamental_cache
+                if key == normalized or key.startswith(f"{normalized}|")
+            ]
+            for key in keys:
+                self._fundamental_cache.pop(key, None)
+            removed["fundamental"] = len(keys)
+
+        with self._stock_name_cache_lock:
+            name_keys = [
+                key
+                for key in self._stock_name_cache
+                if normalize_stock_code(str(key)) == normalized
+            ]
+            for key in name_keys:
+                self._stock_name_cache.pop(key, None)
+            removed["stock_name"] = len(name_keys)
+
+        return removed
 
     @staticmethod
     def _try_scalar_isna(value: Any, context: str) -> Optional[bool]:

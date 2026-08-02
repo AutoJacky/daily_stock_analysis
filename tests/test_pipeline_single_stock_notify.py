@@ -239,6 +239,32 @@ class TestPipelineSingleStockNotify(unittest.TestCase):
             "skipped_data_incomplete",
         )
 
+    def test_exhausted_self_heal_is_visible_in_notification_diagnostics(self):
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.notifier = _TrackingNotifier()
+        pipeline.notifier.evaluate_single_stock_push_readiness = MagicMock(
+            return_value=(False, ["最新报告期及核心财务指标不完整"])
+        )
+        pipeline.db = MagicMock()
+        pipeline.save_context_snapshot = True
+        result = _make_result("SNDK")
+        result.query_id = "query-repair-exhausted"
+        result.report_self_heal = {
+            "enabled": True,
+            "attempts": 2,
+            "success": False,
+            "remaining_issues": ["最新报告期及核心财务指标不完整"],
+        }
+
+        pipeline._send_single_stock_notification(result)
+
+        pipeline.notifier.send.assert_not_called()
+        run = pipeline.db.update_analysis_history_diagnostics.call_args.kwargs[
+            "notification_runs"
+        ][-1]
+        self.assertEqual(run["status"], "repair_exhausted")
+        self.assertEqual(run["attempts"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

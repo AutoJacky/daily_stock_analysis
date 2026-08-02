@@ -108,6 +108,16 @@ logger = logging.getLogger(__name__)
 _SINGLE_STOCK_NOTIFY_LOCK_INIT_GUARD = threading.Lock()
 _DAILY_MARKET_CONTEXT_SERVICE_LOCK_INIT_GUARD = threading.Lock()
 
+_PUSH_READINESS_REPAIR_COMPONENTS = {
+    "股票名称或代码未确认": {"identity"},
+    "当日行情 OHLC/前收盘/成交量不完整": {"daily", "quote"},
+    "MA5/MA10/MA20 技术基线不完整": {"daily", "technical"},
+    "最新报告期及核心财务指标不完整": {"fundamental"},
+    "近期新闻/公告缺少日期、来源和可访问链接": {"intelligence"},
+    "持仓/空仓行动建议不完整": {"decision"},
+    "A 股个股资金流数据不完整": {"fundamental", "capital_flow"},
+}
+
 
 def _symbol_scope_lookup_values(code: str, market: str) -> List[str]:
     """Return accepted persisted-intelligence symbol spellings for lookup."""
@@ -3088,6 +3098,15 @@ class StockAnalysisPipeline:
             if current_time is not None:
                 analyze_kwargs["current_time"] = current_time
             result = self.analyze_stock(code, report_type, **analyze_kwargs)
+
+            if result and result.success:
+                result = self._self_heal_incomplete_report(
+                    result=result,
+                    code=code,
+                    report_type=report_type,
+                    query_id=effective_query_id,
+                    current_time=current_time,
+                )
             
             if result and result.success:
                 logger.info(
@@ -3116,6 +3135,203 @@ class StockAnalysisPipeline:
         finally:
             reset_run_diagnostic_context(diag_token)
             reset_frozen_target_date(token)
+
+    def _self_heal_incomplete_report(
+        self,
+        *,
+        result: AnalysisResult,
+        code: str,
+        report_type: ReportType,
+        query_id: str,
+        current_time: Optional[datetime],
+    ) -> AnalysisResult:
+        """Repair incomplete evidence and regenerate before formal delivery."""
+
+        checker = getattr(
+            getattr(self, "notifier", None),
+            "evaluate_single_stock_push_readiness",
+            None,
+        )
+        config = getattr(self, "config", None)
+        if (
+            not callable(checker)
+            or not getattr(config, "push_report_self_heal_enabled", True)
+        ):
+            return result
+
+        ready, issues = checker(result)
+        if ready:
+            return result
+
+        max_attempts = max(
+            0,
+            min(3, int(getattr(config, "push_report_self_heal_max_attempts", 2))),
+        )
+        delay_seconds = max(
+            0.0,
+            min(30.0, float(getattr(config, "push_report_self_heal_delay_seconds", 1.0))),
+        )
+        if max_attempts <= 0:
+            return result
+
+        repair_history: List[Dict[str, Any]] = []
+        current_result = result
+        current_issues = list(issues)
+        for attempt in range(1, max_attempts + 1):
+            logger.warning(
+                "[%s] 正式推送证据不完整，启动自愈 %d/%d：%s",
+                code,
+                attempt,
+                max_attempts,
+                "；".join(current_issues),
+            )
+            self._emit_progress(
+                95,
+                f"{code}：数据完整性未达标，正在自动补采（{attempt}/{max_attempts}）",
+            )
+            repair_actions = self._repair_incomplete_report_inputs(
+                code=code,
+                stock_name=str(getattr(current_result, "name", "") or ""),
+                issues=current_issues,
+            )
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
+
+            analyze_kwargs: Dict[str, Any] = {"query_id": query_id}
+            if current_time is not None:
+                analyze_kwargs["current_time"] = current_time
+            refreshed = self.analyze_stock(code, report_type, **analyze_kwargs)
+            if refreshed is None or not refreshed.success:
+                repair_history.append(
+                    {
+                        "attempt": attempt,
+                        "issues_before": list(current_issues),
+                        "actions": repair_actions,
+                        "result": "analysis_failed",
+                    }
+                )
+                continue
+
+            current_result = refreshed
+            ready, next_issues = checker(current_result)
+            repair_history.append(
+                {
+                    "attempt": attempt,
+                    "issues_before": list(current_issues),
+                    "actions": repair_actions,
+                    "issues_after": list(next_issues),
+                    "result": "repaired" if ready else "still_incomplete",
+                }
+            )
+            current_issues = list(next_issues)
+            if ready:
+                logger.info("[%s] 自愈成功，第 %d 轮后已达正式推送标准", code, attempt)
+                record_notification_run(
+                    channel="report_repair",
+                    status="self_healed",
+                    success=True,
+                    attempts=attempt,
+                )
+                break
+
+        current_result.report_self_heal = {
+            "enabled": True,
+            "attempts": len(repair_history),
+            "success": not current_issues,
+            "remaining_issues": list(current_issues),
+            "history": repair_history,
+        }
+        if current_issues:
+            logger.error(
+                "[%s] 自愈 %d 轮后仍未达标，本轮不会伪造数据：%s",
+                code,
+                len(repair_history),
+                "；".join(current_issues),
+            )
+            record_notification_run(
+                channel="report_repair",
+                status="repair_exhausted",
+                success=False,
+                attempts=len(repair_history),
+                error_message="；".join(current_issues),
+            )
+        return current_result
+
+    def _repair_incomplete_report_inputs(
+        self,
+        *,
+        code: str,
+        stock_name: str,
+        issues: List[str],
+    ) -> Dict[str, Any]:
+        """Perform issue-directed cache invalidation and multi-source refetch."""
+
+        components: set[str] = set()
+        for issue in issues:
+            components.update(_PUSH_READINESS_REPAIR_COMPONENTS.get(issue, set()))
+        if not components:
+            components.add("decision")
+
+        actions: Dict[str, Any] = {
+            "components": sorted(components),
+            "cache_invalidated": False,
+            "daily_refetched": False,
+            "intelligence_refreshed": False,
+        }
+        manager = getattr(self, "fetcher_manager", None)
+        invalidator = getattr(manager, "invalidate_stock_caches", None)
+        if callable(invalidator):
+            try:
+                actions["invalidated"] = invalidator(code)
+                actions["cache_invalidated"] = True
+            except Exception as exc:
+                actions["cache_error"] = type(exc).__name__
+                logger.warning("[%s] 自愈清理数据缓存失败: %s", code, exc)
+
+        if components.intersection({"daily", "quote", "technical"}):
+            try:
+                daily_df, source_name = manager.get_daily_data(code, days=120)
+                if daily_df is not None and not daily_df.empty:
+                    saved_count = self.db.save_daily_data(daily_df, code, source_name)
+                    actions.update(
+                        {
+                            "daily_refetched": True,
+                            "daily_source": source_name,
+                            "daily_rows": len(daily_df),
+                            "daily_saved": saved_count,
+                        }
+                    )
+            except Exception as exc:
+                actions["daily_error"] = type(exc).__name__
+                logger.warning("[%s] 自愈扩展日线补采失败: %s", code, exc)
+
+        if "intelligence" in components:
+            search_service = getattr(self, "search_service", None)
+            search_invalidator = getattr(
+                search_service,
+                "invalidate_stock_search_cache",
+                None,
+            )
+            if callable(search_invalidator):
+                try:
+                    actions["search_cache_removed"] = search_invalidator(
+                        code,
+                        stock_name,
+                    )
+                except Exception as exc:
+                    actions["search_cache_error"] = type(exc).__name__
+            try:
+                refresh_result = IntelligenceService(config=self.config).refresh_auto_sources(
+                    force=True,
+                )
+                actions["intelligence_refreshed"] = True
+                if isinstance(refresh_result, dict):
+                    actions["intelligence_refresh_status"] = refresh_result.get("status")
+            except Exception as exc:
+                actions["intelligence_error"] = type(exc).__name__
+                logger.warning("[%s] 自愈强制刷新资讯源失败: %s", code, exc)
+
+        return actions
     
     def run(
         self,
@@ -3349,23 +3565,36 @@ class StockAnalysisPipeline:
             ready, readiness_issues = readiness_checker(result)
             if not ready:
                 reason = "；".join(readiness_issues)
+                repair_summary = getattr(result, "report_self_heal", None)
+                repair_attempts = (
+                    int(repair_summary.get("attempts") or 0)
+                    if isinstance(repair_summary, dict)
+                    else 0
+                )
+                status = (
+                    "repair_exhausted"
+                    if repair_attempts > 0
+                    else "skipped_data_incomplete"
+                )
                 logger.warning(
-                    "[%s] 个股报告未达正式推送标准，仅保留 WebUI/历史记录：%s",
+                    "[%s] 个股报告未达正式推送标准，自愈轮数=%d；"
+                    "本轮不推送伪造数据，下次运行会继续补采：%s",
                     stock_code,
+                    repair_attempts,
                     reason,
                 )
                 notification_run = self._build_notification_run_snapshot(
                     channel="report",
-                    status="skipped_data_incomplete",
+                    status=status,
                     success=False,
-                    attempts=0,
+                    attempts=repair_attempts,
                     error_message=reason,
                 )
                 record_notification_run(
                     channel="report",
-                    status="skipped_data_incomplete",
+                    status=status,
                     success=False,
-                    attempts=0,
+                    attempts=repair_attempts,
                     error_message=reason,
                 )
                 self._refresh_saved_diagnostic_snapshot(

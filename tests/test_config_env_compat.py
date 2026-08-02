@@ -253,6 +253,27 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             config = Config._load_from_env()
 
         self.assertTrue(config.llm_prompt_cache_telemetry_enabled)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_push_report_self_heal_env_is_loaded_and_bounded(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "PUSH_REPORT_SELF_HEAL_ENABLED": "true",
+                "PUSH_REPORT_SELF_HEAL_MAX_ATTEMPTS": "99",
+                "PUSH_REPORT_SELF_HEAL_DELAY_SECONDS": "99",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.push_report_self_heal_enabled)
+        self.assertEqual(config.push_report_self_heal_max_attempts, 3)
+        self.assertEqual(config.push_report_self_heal_delay_seconds, 30.0)
         self.assertFalse(config.llm_prompt_cache_hints_enabled)
         self.assertEqual(config.llm_prompt_cache_diagnostics_level, "off")
 

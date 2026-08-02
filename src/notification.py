@@ -2468,13 +2468,14 @@ class NotificationService(
     ) -> Tuple[bool, List[str]]:
         """Apply the pre-delivery minimum evidence contract.
 
-        Analysis/history persistence remains fail-open so an incomplete run is
-        diagnosable in WebUI.  WeChat delivery is fail-closed: identity, daily
-        quote, technical position, structured financials, verified events and
-        an executable action card must all be present.  A-share reports also
-        require actual stock-level capital-flow values because that dataset is
-        supported for that market; unsupported offshore real-time retail/
-        institutional splits are never fabricated.
+        The pipeline uses these issues to trigger stock-scoped cache cleanup,
+        fallback refetching and bounded regeneration before delivery.  WeChat
+        delivery remains fail-closed after those repair attempts: identity,
+        daily quote, technical position, structured financials, verified
+        events and an executable action card must all be present.  A-share
+        reports also require actual stock-level capital-flow values because
+        that dataset is supported for that market; unsupported offshore
+        real-time retail/institutional splits are never fabricated.
         """
 
         if not getattr(self._config, 'push_report_minimum_data_enabled', True):

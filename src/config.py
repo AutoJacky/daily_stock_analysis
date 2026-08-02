@@ -978,6 +978,9 @@ class Config:
     pushplus_topic: Optional[str] = None  # PushPlus 群组编码（一对多推送）
     pushplus_max_chars: int = 20000  # 官方普通用户单次内容上限（字符）
     push_report_minimum_data_enabled: bool = True  # 核心数据不齐时不推送个股报告
+    push_report_self_heal_enabled: bool = True  # 不完整时自动补采并重新分析
+    push_report_self_heal_max_attempts: int = 2  # 单股当次运行最多自愈轮数
+    push_report_self_heal_delay_seconds: float = 1.0  # 自愈轮次间隔
 
     # Server酱3 推送配置
     serverchan3_sendkey: Optional[str] = None  # Server酱3 SendKey
@@ -1912,6 +1915,24 @@ class Config:
             push_report_minimum_data_enabled=parse_env_bool(
                 os.getenv('PUSH_REPORT_MINIMUM_DATA_ENABLED'),
                 default=True,
+            ),
+            push_report_self_heal_enabled=parse_env_bool(
+                os.getenv('PUSH_REPORT_SELF_HEAL_ENABLED'),
+                default=True,
+            ),
+            push_report_self_heal_max_attempts=parse_env_int(
+                os.getenv('PUSH_REPORT_SELF_HEAL_MAX_ATTEMPTS'),
+                2,
+                field_name='PUSH_REPORT_SELF_HEAL_MAX_ATTEMPTS',
+                minimum=0,
+                maximum=3,
+            ),
+            push_report_self_heal_delay_seconds=parse_env_float(
+                os.getenv('PUSH_REPORT_SELF_HEAL_DELAY_SECONDS'),
+                1.0,
+                field_name='PUSH_REPORT_SELF_HEAL_DELAY_SECONDS',
+                minimum=0.0,
+                maximum=30.0,
             ),
             serverchan3_sendkey=os.getenv('SERVERCHAN3_SENDKEY'),
             custom_webhook_urls=[u.strip() for u in os.getenv('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],

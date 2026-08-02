@@ -94,7 +94,10 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `STOCK_GROUP_N` / `EMAIL_GROUP_N` | Email routing groups (Issue #268): `STOCK_GROUP_N` should be a subset of `STOCK_LIST`; affects email recipients only, not analysis scope or other channels | Optional |
 | `PUSHPLUS_TOKEN` | PushPlus Token ([Get here](https://www.pushplus.plus), Chinese push service) | Optional |
 | `PUSHPLUS_MAX_CHARS` | PushPlus single-message character quota (default 20000); oversized reports are compacted into one request and never paginated | Optional |
-| `PUSH_REPORT_MINIMUM_DATA_ENABLED` | Defaults to true; keep incomplete quote/technical/financial/event/action reports in WebUI without pushing them as formal research | Optional |
+| `PUSH_REPORT_MINIMUM_DATA_ENABLED` | Defaults to true; trigger self-healing for incomplete core evidence and withhold only still-unresolved output from formal research delivery | Optional |
+| `PUSH_REPORT_SELF_HEAL_ENABLED` | Defaults to true; diagnose missing evidence, invalidate stock-scoped caches, refetch from fallbacks, refresh intelligence, and regenerate before delivery | Optional |
+| `PUSH_REPORT_SELF_HEAL_MAX_ATTEMPTS` | Maximum repair passes in one run; defaults to 2 and is bounded to 0-3 | Optional |
+| `PUSH_REPORT_SELF_HEAL_DELAY_SECONDS` | Delay between repair passes; defaults to 1 second and is bounded to 0-30 | Optional |
 | `SERVERCHAN3_SENDKEY` | ServerChan v3 Sendkey ([Get here](https://sc3.ft07.com/), mobile app push service) | Optional |
 | `ASTRBOT_URL` | AstrBot Webhook URL | Optional |
 | `ASTRBOT_TOKEN` | Optional AstrBot Bearer Token | Optional |

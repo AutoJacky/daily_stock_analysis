@@ -95,7 +95,10 @@ daily_stock_analysis/
 | `EMAIL_SENDER_NAME` | 发件人显示名称（默认：daily_stock_analysis股票分析助手） | 可选 |
 | `PUSHPLUS_TOKEN` | PushPlus Token（[获取地址](https://www.pushplus.plus)，国内推送服务） | 可选 |
 | `PUSHPLUS_MAX_CHARS` | PushPlus 单条字符上限，默认 20000；超限时自动瘦身为一条，不分页 | 可选 |
-| `PUSH_REPORT_MINIMUM_DATA_ENABLED` | 默认 true；核心行情、技术、财报、事件和行动建议不齐时仅留档不推送 | 可选 |
+| `PUSH_REPORT_MINIMUM_DATA_ENABLED` | 默认 true；核心证据不齐时先触发自愈，仍未修复则不把残缺内容当作正式研报推送 | 可选 |
+| `PUSH_REPORT_SELF_HEAL_ENABLED` | 默认 true；完整性不达标时自动诊断、多源补采、刷新资讯并重新分析 | 可选 |
+| `PUSH_REPORT_SELF_HEAL_MAX_ATTEMPTS` | 当次运行最多自愈轮数，默认 2，范围 0-3 | 可选 |
+| `PUSH_REPORT_SELF_HEAL_DELAY_SECONDS` | 自愈轮次间隔，默认 1 秒，范围 0-30 | 可选 |
 | `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey（[获取地址](https://sc3.ft07.com/)，手机APP推送服务） | 可选 |
 | `ASTRBOT_URL` | AstrBot Webhook URL | 可选 |
 | `ASTRBOT_TOKEN` | AstrBot Bearer Token（可选） | 可选 |
