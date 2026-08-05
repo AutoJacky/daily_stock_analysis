@@ -101,10 +101,32 @@ def _normalize_code(raw: Any) -> str:
     return s
 
 
+def _eastmoney_a_share_symbol(stock_code: str) -> str:
+    """Return the exchange-suffixed symbol required by EastMoney indicators."""
+    digits = re.sub(r"\D", "", str(stock_code or ""))[-6:].zfill(6)
+    if digits.startswith(("4", "8", "9")):
+        suffix = "BJ"
+    elif digits.startswith(("5", "6")):
+        suffix = "SH"
+    else:
+        suffix = "SZ"
+    return f"{digits}.{suffix}"
+
+
 def _pick_by_keywords(row: pd.Series, keywords: List[str]) -> Optional[Any]:
     """
     Return first non-empty row value whose column name contains any keyword.
     """
+    # Prefer exact matches before substring matches.  EastMoney exposes both
+    # ``TOTALOPERATEREVE`` (amount) and ``TOTALOPERATEREVETZ`` (YoY); a pure
+    # substring scan can silently put the growth percentage into revenue.
+    normalized_keywords = {str(keyword).strip().upper() for keyword in keywords}
+    for col in row.index:
+        if str(col).strip().upper() not in normalized_keywords:
+            continue
+        val = row.get(col)
+        if val is not None and str(val).strip() not in ("", "-", "nan", "None"):
+            return val
     for col in row.index:
         col_s = str(col)
         if any(k in col_s for k in keywords):
@@ -447,6 +469,10 @@ class AkshareFundamentalAdapter:
             "errors": [],
         }
         fin_df, fin_source, fin_errors = self._call_df_candidates([
+            (
+                "stock_financial_analysis_indicator_em",
+                {"symbol": _eastmoney_a_share_symbol(stock_code), "indicator": "按报告期"},
+            ),
             ("stock_financial_abstract_new_ths", {"symbol": stock_code, "indicator": "按报告期"}),
             ("stock_financial_abstract_ths", {"symbol": stock_code, "indicator": "按报告期"}),
             ("stock_financial_abstract", {"symbol": stock_code}),
@@ -466,25 +492,47 @@ class AkshareFundamentalAdapter:
                 "营业总收入同比",
                 "营业收入同比",
                 "营收同比",
+                "TOTALOPERATEREVETZ",
+                "OPERATEREVETZ",
             ],
         ))
         profit_yoy = _safe_float(_pick_by_keywords(
             row,
-            ["归母净利润同比增长率", "净利润同比增长率", "归母净利润同比", "净利润同比"],
+            [
+                "归母净利润同比增长率",
+                "净利润同比增长率",
+                "归母净利润同比",
+                "净利润同比",
+                "PARENTNETPROFITTZ",
+                "NETPROFITTZ",
+            ],
         ))
-        roe = _safe_float(_pick_by_keywords(row, ["净资产收益率", "ROE", "净资产收益"]))
-        gross_margin = _safe_float(_pick_by_keywords(row, ["销售毛利率", "毛利率"]))
+        roe = _safe_float(_pick_by_keywords(row, ["净资产收益率", "ROEJQ", "ROE", "净资产收益"]))
+        gross_margin = _safe_float(_pick_by_keywords(row, ["销售毛利率", "毛利率", "XSMLL"]))
         report_date = _normalize_report_date(
-            _pick_by_keywords(row, ["报告期", "报告日期", "截止日期"])
+            _pick_by_keywords(row, ["报告期", "报告日期", "截止日期", "REPORT_DATE"])
         )
-        revenue = _safe_float(_pick_by_keywords(row, ["营业总收入", "营业收入", "营收"]))
+        revenue = _safe_float(_pick_by_keywords(
+            row,
+            ["营业总收入", "营业收入", "营收", "TOTALOPERATEREVE", "OPERATEREVE"],
+        ))
         net_profit_parent = _safe_float(_pick_by_keywords(
             row,
-            ["归母净利润", "归属于母公司股东的净利润", "母公司股东净利润"],
+            [
+                "归母净利润",
+                "归属于母公司股东的净利润",
+                "母公司股东净利润",
+                "PARENTNETPROFIT",
+            ],
         ))
         operating_cash_flow = _safe_float(_pick_by_keywords(
             row,
-            ["经营活动产生的现金流量净额", "经营现金流", "经营活动现金流"],
+            [
+                "经营活动产生的现金流量净额",
+                "经营现金流",
+                "经营活动现金流",
+                "NETCASHOPERATE",
+            ],
         ))
 
         result["growth"] = {

@@ -587,13 +587,16 @@ class StockAnalysisPipeline:
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
-            persisted_intelligence_context = self._load_persisted_intelligence_context(
+            (
+                persisted_intelligence_context,
+                persisted_event_evidence,
+            ) = self._load_persisted_intelligence_bundle(
                 code=code,
                 stock_name=stock_name,
                 market=market or "cn",
             )
             news_result_count: Optional[int] = None
-            verified_event_evidence: List[Dict[str, Any]] = []
+            verified_event_evidence: List[Dict[str, Any]] = list(persisted_event_evidence)
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
             if self.search_service is not None and self.search_service.is_available:
                 logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
@@ -2771,6 +2774,23 @@ class StockAnalysisPipeline:
         limit: int = 6,
     ) -> Optional[str]:
         """Load locally persisted intelligence as fail-open evidence context."""
+        context, _ = self._load_persisted_intelligence_bundle(
+            code=code,
+            stock_name=stock_name,
+            market=market,
+            limit=limit,
+        )
+        return context
+
+    def _load_persisted_intelligence_bundle(
+        self,
+        *,
+        code: str,
+        stock_name: str,
+        market: str,
+        limit: int = 6,
+    ) -> Tuple[Optional[str], List[Dict[str, Any]]]:
+        """Load formatted context and structured, readiness-usable event evidence."""
         try:
             service = IntelligenceService(config=self.config)
             service.refresh_auto_sources()
@@ -2796,8 +2816,10 @@ class StockAnalysisPipeline:
                 if len(collected) >= limit:
                     break
             if not collected:
-                return None
+                return None, []
             lines = [f"## 本地资讯证据池（{stock_name}/{code}）"]
+            evidence_items: List[Dict[str, Any]] = []
+            code_digits = "".join(char for char in str(code) if char.isdigit())[:6]
             for idx, item in enumerate(collected[:limit], 1):
                 title = str(item.get("title") or "未命名资讯").strip()
                 summary = str(item.get("summary") or "").strip()
@@ -2810,10 +2832,28 @@ class StockAnalysisPipeline:
                     lines.append(f"   摘要：{summary[:220]}")
                 if url and not url.startswith("no-url:intel:"):
                     lines.append(f"   来源：{url}")
-            return "\n".join(lines)
+                if (
+                    title
+                    and published
+                    and source
+                    and url.lower().startswith(("http://", "https://"))
+                ):
+                    evidence_items.append(
+                        {
+                            "title": title,
+                            "published_date": published,
+                            "source": source,
+                            "url": url,
+                            "direct_in_title": bool(
+                                (stock_name and stock_name in title)
+                                or (code_digits and code_digits in title)
+                            ),
+                        }
+                    )
+            return "\n".join(lines), evidence_items
         except Exception as exc:
             logger.debug("读取本地资讯证据失败（fail-open）: %s", exc)
-            return None
+            return None, []
 
     def _build_legacy_analysis_artifacts(
         self,
@@ -3280,7 +3320,9 @@ class StockAnalysisPipeline:
         }
         manager = getattr(self, "fetcher_manager", None)
         invalidator = getattr(manager, "invalidate_stock_caches", None)
-        if callable(invalidator):
+        if callable(invalidator) and components.intersection(
+            {"identity", "fundamental", "capital_flow"}
+        ):
             try:
                 actions["invalidated"] = invalidator(code)
                 actions["cache_invalidated"] = True
@@ -3304,6 +3346,21 @@ class StockAnalysisPipeline:
             except Exception as exc:
                 actions["daily_error"] = type(exc).__name__
                 logger.warning("[%s] 自愈扩展日线补采失败: %s", code, exc)
+
+        if components.intersection({"fundamental", "capital_flow"}):
+            try:
+                context = manager.get_fundamental_context(
+                    code,
+                    budget_seconds=float(
+                        getattr(self.config, "fundamental_stage_timeout_seconds", 30.0)
+                    ),
+                )
+                coverage = context.get("coverage", {}) if isinstance(context, dict) else {}
+                actions["fundamental_refetched"] = True
+                actions["fundamental_coverage"] = dict(coverage) if isinstance(coverage, dict) else {}
+            except Exception as exc:
+                actions["fundamental_error"] = type(exc).__name__
+                logger.warning("[%s] 自愈核心财务/资金流补采失败: %s", code, exc)
 
         if "intelligence" in components:
             search_service = getattr(self, "search_service", None)
@@ -3684,6 +3741,35 @@ class StockAnalysisPipeline:
         except Exception as e:
             logger.error(f"保存本地报告失败: {e}")
 
+    def _partition_push_ready_results(
+        self,
+        results: List[AnalysisResult],
+    ) -> Tuple[List[AnalysisResult], List[Tuple[str, str]]]:
+        """Separate formal reports from incomplete evidence before any batch push."""
+        checker = getattr(
+            getattr(self, "notifier", None),
+            "evaluate_single_stock_push_readiness",
+            None,
+        )
+        if not callable(checker):
+            return list(results), []
+        ready_results: List[AnalysisResult] = []
+        incomplete: List[Tuple[str, str]] = []
+        for result in results:
+            ready, issues = checker(result)
+            if ready:
+                ready_results.append(result)
+                continue
+            code = str(getattr(result, "code", "") or "unknown")
+            reason = "；".join(issues) or "数据完整性未达标"
+            incomplete.append((code, reason))
+            logger.error(
+                "[%s] 批量正式推送已拦截残缺报告，等待后续自愈：%s",
+                code,
+                reason,
+            )
+        return ready_results, incomplete
+
     def _send_notifications(
         self,
         results: List[AnalysisResult],
@@ -3704,6 +3790,10 @@ class StockAnalysisPipeline:
         noise_decision = None
         noise_finalized = False
         try:
+            if not skip_push and results:
+                results, incomplete_items = self._partition_push_ready_results(results)
+                if incomplete_items:
+                    failed_items = list(failed_items or []) + incomplete_items
             logger.info("生成决策仪表盘日报...")
             if results:
                 report = self._generate_aggregate_report(results, report_type)

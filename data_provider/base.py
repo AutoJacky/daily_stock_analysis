@@ -635,6 +635,7 @@ class DataFetcherManager:
         "PytdxFetcher": {"cn"},
         "BaostockFetcher": {"cn"},
         "YfinanceFetcher": {"cn", "hk", "us", "jp", "kr", "tw"},
+        "StooqFetcher": {"us"},
         "LongbridgeFetcher": {"hk", "us"},
         "FinnhubFetcher": {"us"},
         "AlphaVantageFetcher": {"us"},
@@ -1218,6 +1219,7 @@ class DataFetcherManager:
         from .pytdx_fetcher import PytdxFetcher
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
+        from .stooq_fetcher import StooqFetcher
         from .longbridge_fetcher import LongbridgeFetcher
         config = get_config()
         # 创建所有数据源实例（优先级在各 Fetcher 的 __init__ 中确定）
@@ -1227,6 +1229,7 @@ class DataFetcherManager:
         pytdx = PytdxFetcher()      # 通达信数据源（可配 PYTDX_HOST/PYTDX_PORT）
         baostock = BaostockFetcher()
         yfinance = YfinanceFetcher()
+        stooq = StooqFetcher()
         optional_fetchers: List[BaseFetcher] = []
 
         tushare_token = (getattr(config, "tushare_token", None) or "").strip()
@@ -1278,6 +1281,7 @@ class DataFetcherManager:
                 pytdx,
                 baostock,
                 yfinance,
+                stooq,
                 *optional_fetchers,
             ]
 
@@ -1364,11 +1368,11 @@ class DataFetcherManager:
             prefer_lb = self._longbridge_preferred(capability="daily_data") and not is_us_index
             if is_us_index:
                 # 指数始终 YFinance 首选（Longbridge 不提供指数K线）
-                source_order = ["YfinanceFetcher", "FinnhubFetcher"]
+                source_order = ["YfinanceFetcher", "StooqFetcher", "FinnhubFetcher"]
             elif prefer_lb:
-                source_order = ["LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher"]
+                source_order = ["LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher", "StooqFetcher"]
             else:
-                source_order = ["FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher", "LongbridgeFetcher"]
+                source_order = ["FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher", "StooqFetcher", "LongbridgeFetcher"]
             market_label = "美股指数" if is_us_index else "美股"
 
             for order_index, src_name in enumerate(source_order):
@@ -1860,6 +1864,13 @@ class DataFetcherManager:
             primary_quote = self._supplement_quote(
                 stock_code, primary_quote, secondary_src, **secondary_kw,
             )
+            if is_us and primary_quote is None:
+                primary_quote = self._try_fetcher_quote(stock_code, "StooqFetcher")
+                if primary_quote is not None:
+                    logger.info(
+                        "[real-time quote] US %s recovered by independent Stooq fallback",
+                        stock_code,
+                    )
             # 美股个股（非指数）尝试从 Finnhub/AlphaVantage 补充缺失字段
             if is_us and not is_us_index and primary_quote is not None:
                 for extra_src in ["FinnhubFetcher", "AlphaVantageFetcher"]:
@@ -3308,57 +3319,81 @@ class DataFetcherManager:
             [valuation_err] if valuation_err else [],
         )
 
-        # growth / earnings / institution (one AkShare call)
-        if remaining_seconds <= 0:
-            bundle_status = "failed"
-            bundle_payload: Dict[str, Any] = {}
-            bundle_errors = ["fundamental stage timeout"]
-            bundle_ms = 0
+        # Fetch mandatory evidence first.  Previously the slower forecast,
+        # dividend and holder endpoints ran before the core statement and
+        # capital-flow calls, exhausting the shared stage budget and causing
+        # formal reports to lose the fields the readiness contract requires.
+        core_payload: Dict[str, Any] = {}
+        core_err_msg: Optional[str] = None
+        core_ms = 0
+        if remaining_seconds > 0:
+            core_timeout = min(fetch_timeout, max(0.1, remaining_seconds * 0.55))
+            raw_core_payload, core_err_msg, core_ms = self._run_with_retry(
+                lambda: self._fundamental_adapter.get_core_financial_bundle(stock_code),
+                core_timeout,
+                "fundamental_core_financial",
+            )
+            _consume_budget(core_ms)
+            if isinstance(raw_core_payload, dict):
+                core_payload = raw_core_payload
         else:
-            bundle_timeout = min(fetch_timeout, remaining_seconds)
-            bundle_payload, bundle_err_msg, bundle_ms = self._run_with_retry(
+            core_err_msg = "fundamental stage timeout"
+
+        prefetched_capital_flow: Optional[Dict[str, Any]] = None
+        if not is_etf and remaining_seconds > 0:
+            capital_flow_budget = min(fetch_timeout, max(0.1, remaining_seconds * 0.6))
+            capital_flow_start = time.time()
+            prefetched_capital_flow = self.get_capital_flow_context(
+                stock_code,
+                budget_seconds=capital_flow_budget,
+            )
+            _consume_budget(int((time.time() - capital_flow_start) * 1000))
+
+        # Supplemental evidence is best-effort and may consume only the budget
+        # left after the required financial and flow blocks have been attempted.
+        bundle_payload: Dict[str, Any] = {}
+        bundle_err_msg: Optional[str] = None
+        bundle_ms = 0
+        if remaining_seconds > 0:
+            raw_bundle_payload, bundle_err_msg, bundle_ms = self._run_with_retry(
                 lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
-                bundle_timeout,
+                min(fetch_timeout, remaining_seconds),
                 "fundamental_bundle",
             )
             _consume_budget(bundle_ms)
-            if not isinstance(bundle_payload, dict):
-                # Preserve core financial statements even when a slower
-                # forecast/dividend/holder endpoint times out the full bundle.
-                core_timeout = min(fetch_timeout, remaining_seconds)
-                if core_timeout > 0:
-                    core_payload, core_err_msg, core_ms = self._run_with_retry(
-                        lambda: self._fundamental_adapter.get_core_financial_bundle(stock_code),
-                        core_timeout,
-                        "fundamental_core_financial",
-                    )
-                    _consume_budget(core_ms)
-                else:
-                    core_payload, core_err_msg, core_ms = None, "fundamental stage timeout", 0
-                if isinstance(core_payload, dict) and self._has_meaningful_payload(
-                    {
-                        "growth": core_payload.get("growth"),
-                        "earnings": core_payload.get("earnings"),
-                    }
-                ):
-                    bundle_payload = core_payload
-                    bundle_status = str(core_payload.get("status", "partial"))
-                    bundle_errors = ["fundamental_bundle failed; core financial fallback used"]
-                    if bundle_err_msg:
-                        bundle_errors.append(bundle_err_msg)
-                    if core_err_msg:
-                        bundle_errors.append(core_err_msg)
-                else:
-                    bundle_status = "failed"
-                    bundle_payload = {}
-                    bundle_errors = ["fundamental_bundle failed"]
-                    if bundle_err_msg:
-                        bundle_errors.append(bundle_err_msg)
-                    if core_err_msg:
-                        bundle_errors.append(core_err_msg)
-            else:
-                bundle_status = str(bundle_payload.get("status", "not_supported"))
-                bundle_errors = [bundle_err_msg] if bundle_err_msg else []
+            if isinstance(raw_bundle_payload, dict):
+                bundle_payload = raw_bundle_payload
+
+        # Merge the two calls without allowing a partial supplemental response
+        # to overwrite already-recovered core financial values.
+        merged_payload: Dict[str, Any] = dict(bundle_payload)
+        for block_name in ("growth", "earnings", "institution"):
+            supplemental_block = bundle_payload.get(block_name)
+            core_block = core_payload.get(block_name)
+            merged_block: Dict[str, Any] = {}
+            if isinstance(supplemental_block, dict):
+                merged_block.update(supplemental_block)
+            if isinstance(core_block, dict):
+                for key, value in core_block.items():
+                    if value is not None and value != "":
+                        merged_block[key] = value
+            merged_payload[block_name] = merged_block
+        merged_payload["source_chain"] = list(bundle_payload.get("source_chain", [])) + list(
+            core_payload.get("source_chain", [])
+        )
+        merged_payload["errors"] = list(bundle_payload.get("errors", [])) + list(
+            core_payload.get("errors", [])
+        )
+        bundle_payload = merged_payload
+        has_core_evidence = self._has_meaningful_payload(
+            {"growth": bundle_payload.get("growth"), "earnings": bundle_payload.get("earnings")}
+        )
+        bundle_status = (
+            "partial"
+            if has_core_evidence
+            else str(bundle_payload.get("status", "failed" if (core_err_msg or bundle_err_msg) else "not_supported"))
+        )
+        bundle_errors = [error for error in (core_err_msg, bundle_err_msg) if error]
 
         bundle_chain = self._normalize_source_chain(
             bundle_payload.get("source_chain", []),
@@ -3473,13 +3508,13 @@ class DataFetcherManager:
             )
             result_ctx["status"] = "partial"
         else:
-            capital_flow_budget = min(fetch_timeout, remaining_seconds)
-            capital_flow_start = time.time()
-            result_ctx["capital_flow"] = self.get_capital_flow_context(
-                stock_code,
-                budget_seconds=capital_flow_budget,
-            )
-            _consume_budget(int((time.time() - capital_flow_start) * 1000))
+            if isinstance(prefetched_capital_flow, dict):
+                result_ctx["capital_flow"] = prefetched_capital_flow
+            else:
+                result_ctx["capital_flow"] = self.get_capital_flow_context(
+                    stock_code,
+                    budget_seconds=min(fetch_timeout, remaining_seconds),
+                )
 
             dragon_tiger_budget = min(fetch_timeout, remaining_seconds)
             dragon_tiger_start = time.time()

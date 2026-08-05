@@ -55,13 +55,44 @@ class TestFundamentalAdapter(unittest.TestCase):
         self.assertEqual(report["net_profit_parent"], 300.2e8)
         self.assertEqual(report["operating_cash_flow"], 280.0e8)
         candidates = mocked.call_args.args[0]
-        self.assertEqual(candidates[0][0], "stock_financial_abstract_new_ths")
+        self.assertEqual(candidates[0][0], "stock_financial_analysis_indicator_em")
+        self.assertEqual(candidates[0][1]["symbol"], "600519.SH")
 
     def test_parse_dividend_plan_to_per_share_supports_cn_patterns(self) -> None:
         self.assertAlmostEqual(_parse_dividend_plan_to_per_share("10派3元(含税)"), 0.3, places=6)
         self.assertAlmostEqual(_parse_dividend_plan_to_per_share("每10股派发2.5元"), 0.25, places=6)
         self.assertAlmostEqual(_parse_dividend_plan_to_per_share("每股派0.8元"), 0.8, places=6)
         self.assertIsNone(_parse_dividend_plan_to_per_share("仅送股，不现金分红"))
+
+    def test_core_financial_bundle_normalizes_eastmoney_fields_without_amount_growth_mixup(self) -> None:
+        adapter = AkshareFundamentalAdapter()
+        fin_df = pd.DataFrame(
+            {
+                "REPORT_DATE": ["2026-06-30"],
+                # Put YoY columns first to guard against substring collisions.
+                "TOTALOPERATEREVETZ": [12.0],
+                "PARENTNETPROFITTZ": [9.5],
+                "TOTALOPERATEREVE": [100050000000.0],
+                "PARENTNETPROFIT": [30020000000.0],
+                "NETCASHOPERATE": [28000000000.0],
+                "ROEJQ": [18.2],
+                "XSMLL": [91.4],
+            }
+        )
+        with patch.object(
+            adapter,
+            "_call_df_candidates",
+            return_value=(fin_df, "stock_financial_analysis_indicator_em", []),
+        ):
+            result = adapter.get_core_financial_bundle("600519")
+
+        report = result["earnings"]["financial_report"]
+        self.assertEqual(report["report_date"], "2026-06-30")
+        self.assertEqual(report["revenue"], 100050000000.0)
+        self.assertEqual(report["net_profit_parent"], 30020000000.0)
+        self.assertEqual(report["operating_cash_flow"], 28000000000.0)
+        self.assertEqual(result["growth"]["revenue_yoy"], 12.0)
+        self.assertEqual(result["growth"]["net_profit_yoy"], 9.5)
 
     def test_extract_latest_row_returns_none_when_code_mismatch(self) -> None:
         df = pd.DataFrame(

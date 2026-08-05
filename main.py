@@ -1277,12 +1277,22 @@ def run_full_analysis(
 
         # Issue #190: 合并推送（个股+大盘复盘）
         if merge_notification and (results or market_report) and not args.no_notify:
+            partitioned = pipeline._partition_push_ready_results(results)
+            if isinstance(partitioned, tuple) and len(partitioned) == 2:
+                push_ready_results, incomplete_push_items = partitioned
+            else:
+                push_ready_results, incomplete_push_items = list(results), []
+            if incomplete_push_items:
+                logger.warning(
+                    "合并推送已排除 %d 份数据尚在自愈的个股报告",
+                    len(incomplete_push_items),
+                )
             parts = []
             if market_report:
                 parts.append(f"# 📈 大盘复盘\n\n{market_report}")
-            if results:
+            if push_ready_results:
                 dashboard_content = pipeline.notifier.generate_aggregate_report(
-                    results,
+                    push_ready_results,
                     getattr(config, 'report_type', 'simple'),
                 )
                 parts.append(f"# 🚀 个股决策仪表盘\n\n{dashboard_content}")
@@ -1311,7 +1321,13 @@ def run_full_analysis(
             from src.feishu_doc import FeishuDocManager
 
             feishu_doc = FeishuDocManager()
-            if feishu_doc.is_configured() and (results or market_report):
+            feishu_partitioned = pipeline._partition_push_ready_results(results)
+            feishu_ready_results = (
+                feishu_partitioned[0]
+                if isinstance(feishu_partitioned, tuple) and len(feishu_partitioned) == 2
+                else list(results)
+            )
+            if feishu_doc.is_configured() and (feishu_ready_results or market_report):
                 logger.info("正在创建飞书云文档...")
 
                 # 1. 准备标题 "01-01 13:01大盘复盘"
@@ -1327,9 +1343,9 @@ def run_full_analysis(
                     full_content += f"# 📈 大盘复盘\n\n{market_report}\n\n---\n\n"
 
                 # 添加个股决策仪表盘（使用 NotificationService 生成，按 report_type 分支）
-                if results:
+                if feishu_ready_results:
                     dashboard_content = pipeline.notifier.generate_aggregate_report(
-                        results,
+                        feishu_ready_results,
                         getattr(config, 'report_type', 'simple'),
                     )
                     full_content += f"# 🚀 个股决策仪表盘\n\n{dashboard_content}"

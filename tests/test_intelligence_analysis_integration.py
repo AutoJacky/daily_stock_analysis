@@ -75,6 +75,27 @@ class PersistedIntelligenceAnalysisIntegrationTestCase(unittest.TestCase):
         self.assertIn("Company wins major AI order", context)
         self.assertIn("https://news.example.com/symbol", context)
 
+    def test_pipeline_exposes_persisted_items_as_verified_event_evidence(self) -> None:
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.config = self.config
+
+        context, evidence = pipeline._load_persisted_intelligence_bundle(
+            code="600519",
+            stock_name="贵州茅台",
+            market="cn",
+        )
+
+        self.assertIsNotNone(context)
+        self.assertTrue(evidence)
+        self.assertTrue(
+            all(
+                item.get("published_date")
+                and item.get("source")
+                and str(item.get("url", "")).startswith("https://")
+                for item in evidence
+            )
+        )
+
     def test_pipeline_refreshes_auto_sources_before_loading_local_intelligence(self) -> None:
         self.config.news_intel_auto_fetch_enabled = True
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)

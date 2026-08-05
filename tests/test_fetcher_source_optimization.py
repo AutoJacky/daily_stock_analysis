@@ -150,6 +150,7 @@ class TestFetcherSourceOptimization(unittest.TestCase):
                 "PytdxFetcher",
                 "BaostockFetcher",
                 "YfinanceFetcher",
+                "StooqFetcher",
             ],
         )
         mock_tushare.assert_not_called()
@@ -219,6 +220,30 @@ class TestFetcherSourceOptimization(unittest.TestCase):
         self.assertEqual(quote.code, "AAPL")
         yfinance.get_realtime_quote.assert_called_once_with("AAPL")
         longbridge.get_realtime_quote.assert_not_called()
+
+    @patch("src.config.get_config")
+    def test_us_realtime_route_uses_independent_stooq_when_yahoo_is_unavailable(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace(
+            enable_realtime_quote=True,
+            realtime_source_priority="efinance,akshare_em,tushare",
+            realtime_cache_ttl=600,
+        )
+        yfinance = MagicMock()
+        yfinance.name = "YfinanceFetcher"
+        yfinance.priority = 4
+        yfinance.is_available_for_request.return_value = False
+
+        stooq = MagicMock()
+        stooq.name = "StooqFetcher"
+        stooq.priority = 5
+        stooq.get_realtime_quote.return_value = _make_quote("AAPL")
+
+        manager = DataFetcherManager(fetchers=[yfinance, stooq])
+        quote = manager.get_realtime_quote("AAPL")
+
+        self.assertIsNotNone(quote)
+        stooq.get_realtime_quote.assert_called_once_with("AAPL")
+        yfinance.get_realtime_quote.assert_not_called()
 
     @patch("src.config.get_config")
     def test_us_realtime_route_marks_longbridge_fallback_when_secondary_succeeds(self, mock_get_config):
@@ -303,7 +328,6 @@ class TestFetcherSourceOptimization(unittest.TestCase):
         self.assertEqual(source, "AkshareFetcher")
         akshare.get_daily_data.assert_called_once()
         longbridge.get_daily_data.assert_not_called()
-
 
     @patch("src.config.get_config")
     def test_daily_source_health_skips_repeatedly_failing_source(self, mock_get_config):

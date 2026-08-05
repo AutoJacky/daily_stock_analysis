@@ -41,6 +41,9 @@ def _pipeline() -> StockAnalysisPipeline:
         pd.DataFrame({"date": ["2026-07-31"], "close": [100.0]}),
         "FallbackFetcher",
     )
+    pipeline.fetcher_manager.get_fundamental_context.return_value = {
+        "coverage": {"growth": "ok", "earnings": "ok", "capital_flow": "ok"}
+    }
     pipeline.db = MagicMock()
     pipeline.db.save_daily_data.return_value = 1
     pipeline.search_service = MagicMock()
@@ -80,6 +83,9 @@ def test_self_heal_refetches_targeted_inputs_and_returns_repaired_result(mock_in
     assert actual.report_self_heal["attempts"] == 1
     pipeline.fetcher_manager.invalidate_stock_caches.assert_called_once_with("SNDK")
     pipeline.fetcher_manager.get_daily_data.assert_called_once_with("SNDK", days=120)
+    pipeline.fetcher_manager.get_fundamental_context.assert_called_once_with(
+        "SNDK", budget_seconds=30.0
+    )
     pipeline.db.save_daily_data.assert_called_once()
     pipeline.search_service.invalidate_stock_search_cache.assert_called_once_with(
         "SNDK",
@@ -154,3 +160,20 @@ def test_search_cache_invalidation_is_stock_scoped():
 
     assert removed == 2
     assert set(service._cache) == {"AAPL earnings|5|30"}
+
+
+def test_batch_push_partition_blocks_incomplete_results():
+    pipeline = _pipeline()
+    ready = _result("AAPL", "Apple")
+    incomplete = _result("SNDK", "闪迪")
+    pipeline.notifier.evaluate_single_stock_push_readiness.side_effect = [
+        (True, []),
+        (False, ["最新报告期及核心财务指标不完整"]),
+    ]
+
+    ready_results, blocked = pipeline._partition_push_ready_results(
+        [ready, incomplete]
+    )
+
+    assert ready_results == [ready]
+    assert blocked == [("SNDK", "最新报告期及核心财务指标不完整")]
