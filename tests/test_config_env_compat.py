@@ -272,7 +272,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             config = Config._load_from_env()
 
         self.assertTrue(config.push_report_self_heal_enabled)
-        self.assertEqual(config.push_report_self_heal_max_attempts, 3)
+        self.assertEqual(config.push_report_self_heal_max_attempts, 6)
         self.assertEqual(config.push_report_self_heal_delay_seconds, 30.0)
         self.assertFalse(config.llm_prompt_cache_hints_enabled)
         self.assertEqual(config.llm_prompt_cache_diagnostics_level, "off")

@@ -3205,7 +3205,7 @@ class StockAnalysisPipeline:
 
         max_attempts = max(
             0,
-            min(3, int(getattr(config, "push_report_self_heal_max_attempts", 2))),
+            min(6, int(getattr(config, "push_report_self_heal_max_attempts", 4))),
         )
         delay_seconds = max(
             0.0,
@@ -3233,6 +3233,7 @@ class StockAnalysisPipeline:
                 code=code,
                 stock_name=str(getattr(current_result, "name", "") or ""),
                 issues=current_issues,
+                attempt=attempt,
             )
             if delay_seconds > 0:
                 time.sleep(delay_seconds)
@@ -3303,22 +3304,68 @@ class StockAnalysisPipeline:
         code: str,
         stock_name: str,
         issues: List[str],
+        attempt: int = 1,
     ) -> Dict[str, Any]:
-        """Perform issue-directed cache invalidation and multi-source refetch."""
+        """Perform an escalating repair plan, then let the caller regenerate.
+
+        The first pass only repairs the evidence blocks named by the readiness
+        contract.  Repeated failures expand to every mandatory block and, from
+        the third pass, reset transient provider health before trying the full
+        fallback chain again.  This keeps normal runs cheap while ensuring a
+        review finding produces concrete recovery work instead of prose only.
+        """
 
         components: set[str] = set()
         for issue in issues:
             components.update(_PUSH_READINESS_REPAIR_COMPONENTS.get(issue, set()))
         if not components:
             components.add("decision")
+        repair_level = "targeted"
+        if attempt >= 2:
+            repair_level = "full_refetch"
+            components.update(
+                {
+                    "identity",
+                    "daily",
+                    "quote",
+                    "technical",
+                    "fundamental",
+                    "capital_flow",
+                    "intelligence",
+                    "decision",
+                }
+            )
 
         actions: Dict[str, Any] = {
             "components": sorted(components),
+            "repair_level": repair_level,
+            "attempt": attempt,
             "cache_invalidated": False,
             "daily_refetched": False,
+            "quote_refetched": False,
             "intelligence_refreshed": False,
+            "analysis_regeneration_scheduled": True,
         }
         manager = getattr(self, "fetcher_manager", None)
+
+        if attempt >= 3:
+            # Earlier calls have already exhausted the provider fallback chain.
+            # Reset only transient health state; stock data caches are cleared
+            # separately below and no credentials/configuration are modified.
+            try:
+                reset_health = getattr(manager, "reset_daily_source_health", None)
+                if callable(reset_health):
+                    reset_health()
+                from data_provider.realtime_types import get_realtime_circuit_breaker
+
+                get_realtime_circuit_breaker().reset()
+                actions["provider_health_reset"] = True
+                actions["repair_level"] = "provider_recovery"
+            except Exception as exc:
+                actions["provider_health_reset"] = False
+                actions["provider_health_error"] = type(exc).__name__
+                logger.warning("[%s] 自愈恢复数据源健康状态失败: %s", code, exc)
+
         invalidator = getattr(manager, "invalidate_stock_caches", None)
         if callable(invalidator) and components.intersection(
             {"identity", "fundamental", "capital_flow"}
@@ -3332,7 +3379,8 @@ class StockAnalysisPipeline:
 
         if components.intersection({"daily", "quote", "technical"}):
             try:
-                daily_df, source_name = manager.get_daily_data(code, days=120)
+                history_days = 240 if attempt >= 2 else 120
+                daily_df, source_name = manager.get_daily_data(code, days=history_days)
                 if daily_df is not None and not daily_df.empty:
                     saved_count = self.db.save_daily_data(daily_df, code, source_name)
                     actions.update(
@@ -3341,22 +3389,46 @@ class StockAnalysisPipeline:
                             "daily_source": source_name,
                             "daily_rows": len(daily_df),
                             "daily_saved": saved_count,
+                            "daily_requested_days": history_days,
                         }
                     )
             except Exception as exc:
                 actions["daily_error"] = type(exc).__name__
                 logger.warning("[%s] 自愈扩展日线补采失败: %s", code, exc)
 
+        if components.intersection({"identity", "quote"}):
+            try:
+                repaired_name = manager.get_stock_name(code, allow_realtime=False)
+                if repaired_name:
+                    actions["identity_refetched"] = True
+                    actions["identity_name"] = str(repaired_name)
+            except Exception as exc:
+                actions["identity_error"] = type(exc).__name__
+            try:
+                quote = manager.get_realtime_quote(code, log_final_failure=False)
+                actions["quote_refetched"] = quote is not None
+                if quote is not None:
+                    actions["quote_source"] = str(
+                        getattr(getattr(quote, "source", None), "value", None)
+                        or getattr(quote, "source", "unknown")
+                    )
+            except Exception as exc:
+                actions["quote_error"] = type(exc).__name__
+                logger.warning("[%s] 自愈实时行情补采失败: %s", code, exc)
+
         if components.intersection({"fundamental", "capital_flow"}):
             try:
+                base_budget = float(
+                    getattr(self.config, "fundamental_stage_timeout_seconds", 30.0)
+                )
+                repair_budget = min(90.0, base_budget * (1.0 + 0.5 * (attempt - 1)))
                 context = manager.get_fundamental_context(
                     code,
-                    budget_seconds=float(
-                        getattr(self.config, "fundamental_stage_timeout_seconds", 30.0)
-                    ),
+                    budget_seconds=repair_budget,
                 )
                 coverage = context.get("coverage", {}) if isinstance(context, dict) else {}
                 actions["fundamental_refetched"] = True
+                actions["fundamental_budget_seconds"] = repair_budget
                 actions["fundamental_coverage"] = dict(coverage) if isinstance(coverage, dict) else {}
             except Exception as exc:
                 actions["fundamental_error"] = type(exc).__name__
@@ -3866,7 +3938,15 @@ class StockAnalysisPipeline:
                         notification_run=notification_run,
                     )
 
-                send_context = self.notifier.send_to_context(report)
+                try:
+                    send_context = self.notifier.send_to_context(
+                        report,
+                        route_type="report",
+                    )
+                except TypeError:
+                    # Compatibility for integrations that still expose the
+                    # historical one-argument context sender.
+                    send_context = self.notifier.send_to_context(report)
                 if send_context:
                     _record_channel_result("__context__", True)
 
@@ -3877,7 +3957,12 @@ class StockAnalysisPipeline:
                     None,
                 )
                 if callable(should_broadcast_static_func):
-                    should_broadcast_static = bool(should_broadcast_static_func())
+                    try:
+                        should_broadcast_static = bool(
+                            should_broadcast_static_func(route_type="report")
+                        )
+                    except TypeError:
+                        should_broadcast_static = bool(should_broadcast_static_func())
                 if not should_broadcast_static:
                     if not send_context:
                         _record_channel_result("__context__", False)

@@ -12,6 +12,7 @@
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -45,6 +46,111 @@ _MARKET_REVIEW_MARKETS = (
 )
 _MARKET_REVIEW_REGION_ORDER = tuple(market for market, _, _ in _MARKET_REVIEW_MARKETS)
 _VALID_MARKET_REVIEW_REGIONS = frozenset(_MARKET_REVIEW_REGION_ORDER)
+
+
+def _run_market_analyzer_with_self_heal(
+    market_analyzer: MarketAnalyzer,
+    *,
+    config: object,
+    search_service: Optional[SearchService],
+    analyzer: Optional[GeminiAnalyzer],
+    region: str,
+):
+    """Run a market review and actively repair explicit core-data failures."""
+    review_result = market_analyzer.run_daily_review_with_snapshot()
+    max_attempts = max(
+        0,
+        min(6, int(getattr(config, "push_report_self_heal_max_attempts", 4))),
+    )
+    delay_seconds = max(
+        0.0,
+        min(30.0, float(getattr(config, "push_report_self_heal_delay_seconds", 1.0))),
+    )
+    enabled = bool(getattr(config, "push_report_self_heal_enabled", True))
+    history = []
+
+    for attempt in range(1, max_attempts + 1):
+        payload = (
+            review_result.structured_payload
+            if isinstance(getattr(review_result, "structured_payload", None), dict)
+            else {}
+        )
+        quality = payload.get("data_quality") if isinstance(payload, dict) else {}
+        quality = quality if isinstance(quality, dict) else {}
+        # Older/custom analyzers without this field retain their legacy path.
+        if quality.get("core_data_ready") is not False or not enabled:
+            break
+
+        missing = list(quality.get("missing_core_fields") or [])
+        logger.warning(
+            "[MarketReview] region=%s action=self_heal attempt=%d/%d missing=%s",
+            region,
+            attempt,
+            max_attempts,
+            ",".join(missing),
+        )
+        actions: Dict[str, Any] = {
+            "attempt": attempt,
+            "issues_before": missing,
+            "market_data_manager_rebuilt": True,
+        }
+        try:
+            from data_provider import DataFetcherManager
+            from data_provider.realtime_types import get_realtime_circuit_breaker
+
+            DataFetcherManager.reset_daily_source_health()
+            get_realtime_circuit_breaker().reset()
+            actions["provider_health_reset"] = True
+        except Exception as exc:
+            actions["provider_health_reset"] = False
+            actions["provider_health_error"] = type(exc).__name__
+
+        try:
+            old_manager = getattr(market_analyzer, "data_manager", None)
+            close = getattr(old_manager, "close", None)
+            if callable(close):
+                close()
+        except Exception as exc:
+            actions["old_manager_close_error"] = type(exc).__name__
+
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+        market_analyzer = MarketAnalyzer(
+            search_service=search_service,
+            analyzer=analyzer,
+            region=region,
+            config=config,
+        )
+        refreshed = market_analyzer.run_daily_review_with_snapshot()
+        next_payload = (
+            refreshed.structured_payload
+            if isinstance(getattr(refreshed, "structured_payload", None), dict)
+            else {}
+        )
+        next_quality = (
+            next_payload.get("data_quality")
+            if isinstance(next_payload.get("data_quality"), dict)
+            else {}
+        )
+        actions["issues_after"] = list(next_quality.get("missing_core_fields") or [])
+        actions["result"] = (
+            "repaired"
+            if next_quality.get("core_data_ready") is not False
+            else "still_incomplete"
+        )
+        history.append(actions)
+        review_result = refreshed
+
+    if history and isinstance(getattr(review_result, "structured_payload", None), dict):
+        final_quality = review_result.structured_payload.get("data_quality") or {}
+        review_result.structured_payload["self_heal"] = {
+            "enabled": True,
+            "attempts": len(history),
+            "success": final_quality.get("core_data_ready") is not False,
+            "remaining_issues": list(final_quality.get("missing_core_fields") or []),
+            "history": history,
+        }
+    return review_result
 
 
 @dataclass
@@ -248,7 +354,13 @@ def run_market_review(
                     region=mkt,
                     config=runtime_config,
                 )
-                review_result = mkt_analyzer.run_daily_review_with_snapshot()
+                review_result = _run_market_analyzer_with_self_heal(
+                    mkt_analyzer,
+                    config=runtime_config,
+                    search_service=search_service,
+                    analyzer=analyzer,
+                    region=mkt,
+                )
                 mkt_report = review_result.report
                 _collect_market_light_snapshot(
                     market_light_snapshots,
@@ -286,7 +398,13 @@ def run_market_review(
                 region=run_region,
                 config=runtime_config,
             )
-            review_result = market_analyzer.run_daily_review_with_snapshot()
+            review_result = _run_market_analyzer_with_self_heal(
+                market_analyzer,
+                config=runtime_config,
+                search_service=search_service,
+                analyzer=analyzer,
+                region=run_region,
+            )
             review_report = review_result.report
             market_light_snapshots = {}
             _collect_market_light_snapshot(

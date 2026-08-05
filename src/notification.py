@@ -629,12 +629,38 @@ class NotificationService(
         release_notification_noise(decision)
 
     # ===== Context channel =====
-    def _has_context_channel(self) -> bool:
+    def _is_context_channel_allowed(
+        self,
+        channel: str,
+        route_type: Optional[str] = None,
+    ) -> bool:
+        """Apply the same route allow-list to interactive reply channels."""
+        if route_type is None:
+            return True
+        route_config = get_notification_route_config(route_type)
+        if route_config is None:
+            return True
+        configured = getattr(self._config, route_config["config_attr"], []) or []
+        if not configured:
+            return True
+        valid_channels, _ = split_notification_route_channels(configured)
+        return channel in set(valid_channels)
+
+    def _has_context_channel(self, route_type: Optional[str] = None) -> bool:
         """判断是否存在基于消息上下文的临时渠道（如钉钉会话、飞书会话）"""
         return (
-            self._extract_dingtalk_session_webhook() is not None
-            or self._extract_feishu_reply_info() is not None
-            or self._extract_telegram_context_chat_id() is not None
+            (
+                self._is_context_channel_allowed("dingtalk", route_type)
+                and self._extract_dingtalk_session_webhook() is not None
+            )
+            or (
+                self._is_context_channel_allowed("feishu", route_type)
+                and self._extract_feishu_reply_info() is not None
+            )
+            or (
+                self._is_context_channel_allowed("telegram", route_type)
+                and self._extract_telegram_context_chat_id() is not None
+            )
         )
 
     def _source_platform(self) -> str:
@@ -664,9 +690,12 @@ class NotificationService(
                     return candidate_text
         return None
 
-    def should_broadcast_static_channels(self) -> bool:
+    def should_broadcast_static_channels(
+        self,
+        route_type: Optional[str] = None,
+    ) -> bool:
         """Whether static notification channels should receive this dispatch."""
-        return not self._has_context_channel()
+        return not self._has_context_channel(route_type)
 
     def _extract_dingtalk_session_webhook(self) -> Optional[str]:
         """从来源消息中提取钉钉会话 Webhook（用于 Stream 模式回复）"""
@@ -701,16 +730,24 @@ class NotificationService(
             return None
         return {"chat_id": chat_id}
 
-    def send_to_context(self, content: str) -> bool:
+    def send_to_context(
+        self,
+        content: str,
+        route_type: Optional[str] = None,
+    ) -> bool:
         """
         向基于消息上下文的渠道发送消息（例如钉钉 Stream 会话）
 
         Args:
             content: Markdown 格式内容
         """
-        return self._send_via_source_context(content)
+        return self._send_via_source_context(content, route_type=route_type)
 
-    def _send_via_source_context(self, content: str) -> bool:
+    def _send_via_source_context(
+        self,
+        content: str,
+        route_type: Optional[str] = None,
+    ) -> bool:
         """
         使用消息上下文（如钉钉/飞书会话）发送一份报告
 
@@ -719,7 +756,11 @@ class NotificationService(
         success = False
 
         # 尝试钉钉会话
-        session_webhook = self._extract_dingtalk_session_webhook()
+        session_webhook = (
+            self._extract_dingtalk_session_webhook()
+            if self._is_context_channel_allowed("dingtalk", route_type)
+            else None
+        )
         if session_webhook:
             try:
                 if self._send_dingtalk_chunked(session_webhook, content, max_bytes=20000):
@@ -731,7 +772,11 @@ class NotificationService(
                 logger.error(f"钉钉会话（Stream）推送异常: {e}")
 
         # 尝试飞书会话
-        feishu_info = self._extract_feishu_reply_info()
+        feishu_info = (
+            self._extract_feishu_reply_info()
+            if self._is_context_channel_allowed("feishu", route_type)
+            else None
+        )
         if feishu_info:
             try:
                 if self._send_feishu_stream_reply(feishu_info["chat_id"], content):
@@ -743,7 +788,11 @@ class NotificationService(
                 logger.error(f"飞书会话（Stream）推送异常: {e}")
 
         # 尝试 Telegram 会话上下文（按来源 chat_id 回执）
-        telegram_chat_id = self._extract_telegram_context_chat_id()
+        telegram_chat_id = (
+            self._extract_telegram_context_chat_id()
+            if self._is_context_channel_allowed("telegram", route_type)
+            else None
+        )
         if telegram_chat_id:
             try:
                 if self.send_to_telegram(content, chat_id=telegram_chat_id):
@@ -3184,8 +3233,8 @@ class NotificationService(
         Returns:
             Structured dispatch diagnostics.
         """
-        context_success = self.send_to_context(content)
-        if not self.should_broadcast_static_channels():
+        context_success = self.send_to_context(content, route_type=route_type)
+        if not self.should_broadcast_static_channels(route_type=route_type):
             if context_success:
                 logger.info("已通过上下文会话完成推送，跳过静态通知渠道")
                 return NotificationDispatchResult(

@@ -309,22 +309,21 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         mock_custom.assert_not_called()
 
     @mock.patch("src.notification.get_config")
-    def test_send_to_context_is_not_limited_by_route(self, mock_get_config: mock.MagicMock):
+    def test_report_route_blocks_feishu_context_and_uses_pushplus_only(self, mock_get_config: mock.MagicMock):
         cfg = _make_config(
-            custom_webhook_urls=["https://example.com/webhook"],
-            notification_report_channels=["telegram"],
+            pushplus_token="pushplus-token",
+            notification_report_channels=["pushplus"],
         )
         mock_get_config.return_value = cfg
+        service = NotificationService(source_message=_make_feishu_message())
 
-        service = NotificationService()
-
-        with mock.patch.object(service, "send_to_context", return_value=True) as mock_context, \
-             mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+        with mock.patch.object(service, "_send_feishu_stream_reply", return_value=True) as mock_reply, \
+             mock.patch.object(service, "send_to_pushplus", return_value=True) as mock_pushplus:
             ok = service.send("content", route_type="report")
 
         self.assertTrue(ok)
-        mock_context.assert_called_once_with("content")
-        mock_custom.assert_not_called()
+        mock_reply.assert_not_called()
+        mock_pushplus.assert_called_once_with("content")
 
     @mock.patch("src.notification.get_config")
     def test_feishu_context_response_skips_static_webhook(self, mock_get_config: mock.MagicMock):

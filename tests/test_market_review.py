@@ -56,6 +56,65 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         notifier.send.return_value = True
         return notifier
 
+    def test_market_review_self_heal_rebuilds_sources_and_revalidates(self) -> None:
+        initial_analyzer = MagicMock()
+        initial_analyzer.data_manager = MagicMock()
+        initial_analyzer.run_daily_review_with_snapshot.return_value = SimpleNamespace(
+            report="data blocked",
+            structured_payload={
+                "data_quality": {
+                    "core_data_ready": False,
+                    "missing_core_fields": ["major_indices"],
+                }
+            },
+        )
+        repaired_result = SimpleNamespace(
+            report="repaired report",
+            structured_payload={
+                "data_quality": {
+                    "core_data_ready": True,
+                    "missing_core_fields": [],
+                }
+            },
+        )
+        rebuilt_analyzer = MagicMock()
+        rebuilt_analyzer.run_daily_review_with_snapshot.return_value = repaired_result
+        config = SimpleNamespace(
+            push_report_self_heal_enabled=True,
+            push_report_self_heal_max_attempts=4,
+            push_report_self_heal_delay_seconds=0,
+        )
+
+        with patch.object(
+            market_review_module,
+            "MarketAnalyzer",
+            return_value=rebuilt_analyzer,
+        ) as analyzer_cls, patch(
+            "data_provider.DataFetcherManager.reset_daily_source_health"
+        ) as reset_daily, patch(
+            "data_provider.realtime_types.get_realtime_circuit_breaker"
+        ) as get_breaker:
+            actual = market_review_module._run_market_analyzer_with_self_heal(
+                initial_analyzer,
+                config=config,
+                search_service=None,
+                analyzer=None,
+                region="cn",
+            )
+
+        self.assertIs(actual, repaired_result)
+        self.assertTrue(actual.structured_payload["self_heal"]["success"])
+        self.assertEqual(actual.structured_payload["self_heal"]["attempts"], 1)
+        reset_daily.assert_called_once_with()
+        get_breaker.return_value.reset.assert_called_once_with()
+        initial_analyzer.data_manager.close.assert_called_once_with()
+        analyzer_cls.assert_called_once_with(
+            search_service=None,
+            analyzer=None,
+            region="cn",
+            config=config,
+        )
+
     def test_resolve_market_review_regions_returns_ordered_non_empty_list(self) -> None:
         cases = [
             (None, ["cn"]),

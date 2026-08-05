@@ -456,7 +456,9 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
 
         pipeline._send_notifications(results, ReportType.SIMPLE)
 
-        pipeline.notifier.should_broadcast_static_channels.assert_called_once_with()
+        pipeline.notifier.should_broadcast_static_channels.assert_called_once_with(
+            route_type="report"
+        )
         pipeline.notifier.send_to_telegram.assert_not_called()
         pipeline.notifier.evaluate_noise_control.assert_not_called()
         pipeline.notifier.record_noise_control.assert_not_called()
@@ -472,7 +474,9 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
 
         pipeline._send_notifications(results, ReportType.SIMPLE)
 
-        pipeline.notifier.should_broadcast_static_channels.assert_called_once_with()
+        pipeline.notifier.should_broadcast_static_channels.assert_called_once_with(
+            route_type="report"
+        )
         pipeline.notifier.send_to_telegram.assert_not_called()
         pipeline.notifier.evaluate_noise_control.assert_not_called()
         pipeline.notifier.record_noise_control.assert_not_called()
@@ -488,7 +492,9 @@ class TestPipelineReportRouteFiltering(unittest.TestCase):
 
         pipeline._send_notifications(results, ReportType.SIMPLE)
 
-        pipeline.notifier.should_broadcast_static_channels.assert_called_once_with()
+        pipeline.notifier.should_broadcast_static_channels.assert_called_once_with(
+            route_type="report"
+        )
         pipeline.notifier.send_to_telegram.assert_not_called()
         pipeline.notifier.evaluate_noise_control.assert_not_called()
         pipeline.notifier.record_noise_control.assert_not_called()

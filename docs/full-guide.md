@@ -96,8 +96,8 @@ daily_stock_analysis/
 | `PUSHPLUS_TOKEN` | PushPlus Token（[获取地址](https://www.pushplus.plus)，国内推送服务） | 可选 |
 | `PUSHPLUS_MAX_CHARS` | PushPlus 单条字符上限，默认 20000；超限时自动瘦身为一条，不分页 | 可选 |
 | `PUSH_REPORT_MINIMUM_DATA_ENABLED` | 默认 true；核心证据不齐时先触发自愈，仍未修复则不把残缺内容当作正式研报推送 | 可选 |
-| `PUSH_REPORT_SELF_HEAL_ENABLED` | 默认 true；完整性不达标时自动诊断、多源补采、刷新资讯并重新分析 | 可选 |
-| `PUSH_REPORT_SELF_HEAL_MAX_ATTEMPTS` | 当次运行最多自愈轮数，默认 2，范围 0-3 | 可选 |
+| `PUSH_REPORT_SELF_HEAL_ENABLED` | 默认 true；个股或大盘完整性不达标时，程序执行定向修复→全量补采→数据源恢复→重新生成与校验，不把模型诊断文字当作修复 | 可选 |
+| `PUSH_REPORT_SELF_HEAL_MAX_ATTEMPTS` | 当次运行最多自愈轮数，默认 4，范围 0-6 | 可选 |
 | `PUSH_REPORT_SELF_HEAL_DELAY_SECONDS` | 自愈轮次间隔，默认 1 秒，范围 0-30 | 可选 |
 | `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey（[获取地址](https://sc3.ft07.com/)，手机APP推送服务） | 可选 |
 | `ASTRBOT_URL` | AstrBot Webhook URL | 可选 |
@@ -113,7 +113,9 @@ daily_stock_analysis/
 
 > *注：至少配置一个渠道，配置多个则同时推送。启动时配置校验会提示 Telegram / 邮件成对字段缺失，以及常见 Webhook URL 未以 `http://` 或 `https://` 开头的问题。
 >
-> 当前默认 `00-daily-analysis.yml` 只显式映射固定 Secret / Variable 名称，不会自动把 `STOCK_GROUP_1`、`EMAIL_GROUP_1` 这类任意编号变量导入运行环境，也不会自动导入 `NEWS_INTEL_AUTO_FETCH_ENABLED` 这类新增可选开关。所以分组邮箱功能和本地资讯自动刷新能力目前不适用于仓库自带默认 GitHub Actions workflow；它们适用于本地 `.env`、Docker，或你自行显式扩展过 `env:` 映射的运行环境。Actions 已显式映射 `CUSTOM_WEBHOOK_BODY_TEMPLATE`、`WEBHOOK_VERIFY_SSL`、`FEISHU_WEBHOOK_SECRET`、`FEISHU_WEBHOOK_KEYWORD`、`PUSHPLUS_TOPIC`、`NTFY_URL`、`NTFY_TOKEN`、`GOTIFY_URL`、`GOTIFY_TOKEN`、P3 通知路由键以及 P4 通知降噪键；`MARKDOWN_TO_IMAGE_CHANNELS` 和 `MERGE_EMAIL_NOTIFICATION` 仍作为行为开关不在默认 workflow 中自动映射。
+> 当前默认 `00-daily-analysis.yml` 只显式映射固定 Secret / Variable 名称，不会自动把 `STOCK_GROUP_1`、`EMAIL_GROUP_1` 这类任意编号变量导入运行环境，也不会自动导入 `NEWS_INTEL_AUTO_FETCH_ENABLED` 这类新增可选开关。所以分组邮箱功能和本地资讯自动刷新能力目前不适用于仓库自带默认 GitHub Actions workflow；它们适用于本地 `.env`、Docker，或你自行显式扩展过 `env:` 映射的运行环境。Actions 已显式映射 `CUSTOM_WEBHOOK_BODY_TEMPLATE`、`WEBHOOK_VERIFY_SSL`、`PUSHPLUS_TOPIC`、`NTFY_URL`、`NTFY_TOKEN`、`GOTIFY_URL`、`GOTIFY_TOKEN`、P3 通知路由键以及 P4 通知降噪键；飞书凭据已从该 workflow 移除，`MARKDOWN_TO_IMAGE_CHANNELS` 和 `MERGE_EMAIL_NOTIFICATION` 仍作为行为开关不在默认 workflow 中自动映射。
+
+> 当前这份部署的每日 workflow 将 report 路由固定为 `pushplus`，个股研报、A 股/美股大盘复盘及每日校准摘要只投递到个人微信，不创建或发送飞书报告。飞书凭据即使仍留在 GitHub Secrets 中也不会被该 workflow 导入。
 
 #### 推送行为配置
 

@@ -6,6 +6,7 @@ import lark_oapi as lark
 from lark_oapi.api.docx.v1 import *
 from typing import List, Dict, Any, Optional
 from src.config import get_config
+from src.notification_routing import parse_notification_route_channels
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,12 @@ class FeishuDocManager:
             self.client = None
 
     def is_configured(self) -> bool:
-        """检查配置是否完整"""
+        """检查凭据完整性，并遵守 report 渠道路由。"""
+        report_routes = parse_notification_route_channels(
+            getattr(self.config, "notification_report_channels", []) or []
+        )
+        if report_routes and "feishu" not in report_routes:
+            return False
         return bool(self.app_id and self.app_secret and self.folder_token)
 
     def create_daily_doc(self, title: str, content_md: str) -> Optional[str]:
