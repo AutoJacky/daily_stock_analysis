@@ -346,6 +346,59 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         self.assertNotIn("dataSource", enhanced["today"])
 
     @patch("src.core.pipeline.get_market_now")
+    @patch("src.core.pipeline.get_market_for_stock", return_value="hk")
+    def test_realtime_overlay_recomputes_pct_and_preserves_daily_ohlc(
+        self, _mock_market, mock_now
+    ) -> None:
+        today = date.today()
+        mock_now.return_value = datetime(
+            today.year, today.month, today.day, 20, 0, tzinfo=timezone.utc
+        )
+        context = {
+            "code": "HK02513",
+            "date": today.isoformat(),
+            "today": {
+                "close": 1252.0,
+                "open": 1240.0,
+                "high": 1260.0,
+                "low": 1230.0,
+                "volume": 4946000,
+                "date": today.isoformat(),
+            },
+            "yesterday": {"close": 1087.0, "volume": 3000000},
+        }
+        quote = UnifiedRealtimeQuote(
+            code="HK02513",
+            name="智谱",
+            source=RealtimeSource.AKSHARE_EM,
+            price=1252.0,
+            open_price=None,
+            high=None,
+            low=None,
+            volume=4946000,
+            change_pct=0.48154,
+            pre_close=None,
+        )
+        trend = TrendAnalysisResult(
+            code="HK02513",
+            trend_status=TrendStatus.BULL,
+            ma5=1127.2,
+            ma10=1050.05,
+            ma20=1171.8,
+        )
+
+        enhanced = self.pipeline._enhance_context(
+            context, quote, None, trend, "智谱"
+        )
+
+        expected_pct = (1252.0 - 1087.0) / 1087.0 * 100
+        self.assertAlmostEqual(enhanced["today"]["pct_chg"], expected_pct)
+        self.assertAlmostEqual(enhanced["realtime"]["change_pct"], expected_pct)
+        self.assertEqual(enhanced["today"]["open"], 1240.0)
+        self.assertEqual(enhanced["today"]["high"], 1260.0)
+        self.assertEqual(enhanced["today"]["low"], 1230.0)
+
+    @patch("src.core.pipeline.get_market_now")
     @patch("src.core.pipeline.get_market_for_stock", return_value="cn")
     def test_realtime_today_does_not_backfill_historical_amount_or_source(
         self, _mock_market, mock_now

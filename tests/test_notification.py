@@ -1070,6 +1070,60 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertEqual(issues, [])
 
     @mock.patch("src.notification.get_config")
+    def test_single_stock_push_readiness_rejects_arithmetic_quote_mismatch(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config()
+        service = NotificationService()
+        result = AnalysisResult(
+            code="HK02513",
+            name="智谱",
+            sentiment_score=39,
+            trend_prediction="震荡",
+            operation_advice="观望",
+            analysis_summary="等待确认",
+            dashboard={
+                "core_conclusion": {
+                    "one_sentence": "等待确认。",
+                    "position_advice": {
+                        "no_position": "暂不介入。",
+                        "has_position": "控制仓位。",
+                    },
+                },
+                "data_perspective": {
+                    "price_position": {"ma5": 1127.2, "ma10": 1050.05, "ma20": 1171.8}
+                },
+                "intelligence": {
+                    "verified_events": [],
+                    "verification_status": "completed_no_events",
+                },
+            },
+            market_snapshot={
+                "date": "2026-08-10",
+                "close": 1252,
+                "prev_close": 1087,
+                "open": 1087,
+                "high": 1252,
+                "low": 1252,
+                "volume": 4946000,
+                "pct_chg": "0.48%",
+            },
+        )
+        result.fundamental_context = {
+            "earnings": {"status": "ok", "data": {"financial_report": {
+                "report_date": "2025-12-31", "revenue": 724000000,
+                "operating_cash_flow": -2246000000,
+            }}},
+            "growth": {"status": "ok", "data": {"revenue_yoy": 99.4}},
+        }
+
+        ready, issues = service.evaluate_single_stock_push_readiness(result)
+
+        self.assertFalse(ready)
+        self.assertIn("当日涨跌幅与收盘/前收盘不一致", issues)
+        self.assertIn("当日行情 OHLC 关系不合法", issues)
+
+    @mock.patch("src.notification.get_config")
     def test_generate_brief_report_shows_model_by_default(self, mock_get_config: mock.MagicMock):
         mock_get_config.return_value = _make_config(report_renderer_enabled=False)
         service = NotificationService()
@@ -1656,7 +1710,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         # 财务摘要
         self.assertIn("财务摘要", out)
         self.assertIn("2024-09-30", out)
-        self.assertIn("12360.00 亿元", out)
+        self.assertIn("1.24 万亿元", out)
         self.assertIn("22.45%", out)
         self.assertIn("15.23%", out)
         self.assertIn("91.55%", out)
@@ -1825,6 +1879,12 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         # Sector + industry render as belong_boards
         self.assertIn("Technology", out)
         self.assertIn("Consumer Electronics", out)
+
+    def test_jpy_trillion_amount_keeps_currency_and_readable_scale(self):
+        self.assertEqual(
+            NotificationService._format_amount_cn(3.761946e12, "JPY"),
+            "3.76 万亿日元",
+        )
 
     @mock.patch("src.notification.get_config")
     def test_related_boards_drops_signal_columns_when_no_sector_data(
@@ -2033,7 +2093,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         out = service.generate_single_stock_report(result)
 
         # Income statement still rendered in CNY (financialCurrency).
-        self.assertIn("10200.00 亿元", out)
+        self.assertIn("1.02 万亿元", out)
         # Dividend per share follows the dividend currency, NOT the financial currency.
         self.assertIn("1.9581 港元", out)
         self.assertNotIn("1.9581 元 ", out)

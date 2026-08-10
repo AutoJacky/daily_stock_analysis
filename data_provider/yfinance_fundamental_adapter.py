@@ -246,9 +246,16 @@ class YfinanceFundamentalAdapter:
             revenue_latest = _safe_float(info.get("totalRevenue"))
         if operating_cash_flow_latest is None:
             operating_cash_flow_latest = _safe_float(info.get("operatingCashflow"))
+        if net_profit_latest is None:
+            # ``netIncomeToCommon`` is an explicit TTM amount and is therefore
+            # stronger evidence than reconstructing profit from a ratio.
+            net_profit_latest = _safe_float(info.get("netIncomeToCommon"))
         if net_profit_latest is None and revenue_latest is not None:
             margin = _safe_float(info.get("profitMargins"))
-            if margin is not None:
+            # Yahoo frequently emits ``0`` as a placeholder when a newly
+            # listed company has no usable profitability data.  Do not turn
+            # that placeholder into a fabricated zero net-profit figure.
+            if margin is not None and abs(margin) > 1e-12:
                 net_profit_latest = revenue_latest * margin
 
         # Statement-derived YoY (requires 4 quarters of history) is preferred

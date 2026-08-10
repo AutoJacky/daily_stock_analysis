@@ -4323,15 +4323,34 @@ class GeminiAnalyzer:
         pct_chg_label = "实时涨跌幅" if realtime_overlay_quote else "涨跌幅"
         volume_label = "实时成交量" if realtime_overlay_quote else "成交量"
         amount_label = "实时成交额" if realtime_overlay_quote else "成交额"
+        market = detect_market(code)
+        currency_code = str((
+            (context.get('realtime') or {}).get('currency')
+            if isinstance(context.get('realtime'), dict)
+            else ''
+        ) or '').strip().upper()
+        if not currency_code:
+            currency_code = {
+                'cn': 'CNY', 'hk': 'HKD', 'us': 'USD', 'jp': 'JPY',
+                'kr': 'KRW', 'tw': 'TWD',
+            }.get(market, 'CNY')
+        currency_label = (
+            {
+                'CNY': '元', 'HKD': '港元', 'USD': '美元', 'JPY': '日元',
+                'KRW': '韩元', 'TWD': '新台币', 'EUR': '欧元', 'GBP': '英镑',
+            }.get(currency_code, currency_code)
+            if report_language == 'zh'
+            else currency_code
+        )
         quote_rows = [
-            f"| {close_price_label} | {today.get('close', 'N/A')} 元 |",
+            f"| {close_price_label} | {today.get('close', 'N/A')} {currency_label} |",
         ]
         if not hide_regular_session_ohlc:
             quote_rows.extend(
                 [
-                    f"| 开盘价 | {today.get('open', 'N/A')} 元 |",
-                    f"| 最高价 | {today.get('high', 'N/A')} 元 |",
-                    f"| 最低价 | {today.get('low', 'N/A')} 元 |",
+                    f"| 开盘价 | {today.get('open', 'N/A')} {currency_label} |",
+                    f"| 最高价 | {today.get('high', 'N/A')} {currency_label} |",
+                    f"| 最低价 | {today.get('low', 'N/A')} {currency_label} |",
                 ]
             )
         quote_rows.extend(
@@ -4352,6 +4371,7 @@ class GeminiAnalyzer:
 | 股票代码 | **{code}** |
 | 股票名称 | **{stock_name}** |
 | 分析日期 | {context.get('date', unknown_text)} |
+| 交易币种 | {currency_code}（{currency_label}） |
 
 ---
 """
@@ -4398,7 +4418,7 @@ class GeminiAnalyzer:
 ### 实时行情增强数据
 | 指标 | 数值 | 解读 |
 |------|------|------|
-| 当前价格 | {rt.get('price', 'N/A')} 元 | |
+| 当前价格 | {rt.get('price', 'N/A')} {currency_label} | |
 | **量比** | **{rt.get('volume_ratio', 'N/A')}** | {rt.get('volume_ratio_desc', '')} |
 | **换手率** | **{rt.get('turnover_rate', 'N/A')}%** | |
 | 市盈率(动态) | {rt.get('pe_ratio', 'N/A')} | |
@@ -4877,6 +4897,7 @@ class GeminiAnalyzer:
 
         amplitude = None
         change_amount = None
+        change_pct = None
         if prev_close not in (None, 0) and high is not None and low is not None:
             try:
                 amplitude = (float(high) - float(low)) / float(prev_close) * 100
@@ -4885,8 +4906,11 @@ class GeminiAnalyzer:
         if prev_close is not None and close is not None:
             try:
                 change_amount = float(close) - float(prev_close)
+                if float(prev_close) != 0:
+                    change_pct = change_amount / float(prev_close) * 100
             except (TypeError, ValueError):
                 change_amount = None
+                change_pct = None
 
         snapshot = {
             "date": context.get('date', '未知'),
@@ -4895,7 +4919,9 @@ class GeminiAnalyzer:
             "high": self._format_price(high),
             "low": self._format_price(low),
             "prev_close": self._format_price(prev_close),
-            "pct_chg": self._format_percent(today.get('pct_chg')),
+            # Always keep the displayed percentage arithmetically consistent
+            # with the close and prev_close cells in the same row.
+            "pct_chg": self._format_percent(change_pct),
             "change_amount": self._format_price(change_amount),
             "amplitude": self._format_percent(amplitude),
             "volume": self._format_volume(today.get('volume')),

@@ -301,6 +301,42 @@ class TestYfinanceFundamentalAdapter(unittest.TestCase):
         self.assertEqual(report["report_date"], "2026-06-30")
         self.assertEqual(report["revenue"], 1.2e9)
 
+    def test_zero_profit_margin_placeholder_does_not_fabricate_net_profit(self) -> None:
+        info = {
+            "financialCurrency": "HKD",
+            "totalRevenue": 7.24e8,
+            "operatingCashflow": -1.5e8,
+            "profitMargins": 0.0,
+            "mostRecentQuarter": int(
+                pd.Timestamp("2026-06-30", tz="UTC").timestamp()
+            ),
+        }
+        ticker = _build_mock_ticker(info)
+
+        with patch("yfinance.Ticker", return_value=ticker):
+            bundle = YfinanceFundamentalAdapter().get_fundamental_bundle("HK02513")
+
+        report = bundle["earnings"]["financial_report"]
+        self.assertIsNone(report["net_profit_parent"])
+
+    def test_explicit_ttm_net_income_is_used_before_margin_inference(self) -> None:
+        info = {
+            "financialCurrency": "USD",
+            "totalRevenue": 2.0e9,
+            "netIncomeToCommon": -3.5e8,
+            "profitMargins": 0.0,
+            "mostRecentQuarter": int(
+                pd.Timestamp("2026-06-30", tz="UTC").timestamp()
+            ),
+        }
+        ticker = _build_mock_ticker(info)
+
+        with patch("yfinance.Ticker", return_value=ticker):
+            bundle = YfinanceFundamentalAdapter().get_fundamental_bundle("TEST")
+
+        report = bundle["earnings"]["financial_report"]
+        self.assertEqual(report["net_profit_parent"], -3.5e8)
+
 
 if __name__ == "__main__":
     unittest.main()

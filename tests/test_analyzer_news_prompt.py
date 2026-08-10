@@ -252,6 +252,45 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         self.assertIn("日期未知或来源未知", prompt)
         self.assertIn("禁止编造", prompt)
 
+    def test_prompt_uses_market_currency_instead_of_hardcoded_yuan(self) -> None:
+        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
+            analyzer = GeminiAnalyzer()
+
+        prompt = analyzer._format_prompt(
+            {
+                "code": "AMD",
+                "stock_name": "Advanced Micro Devices",
+                "date": "2026-08-07",
+                "today": {
+                    "close": 483.36,
+                    "open": 497.94,
+                    "high": 498.99,
+                    "low": 476.06,
+                    "pct_chg": -1.21,
+                    "volume": 26560000,
+                },
+                "realtime": {"price": 483.36, "currency": "USD"},
+            },
+            "Advanced Micro Devices",
+        )
+
+        self.assertIn("| 交易币种 | USD（美元） |", prompt)
+        self.assertIn("483.36 美元", prompt)
+        self.assertNotIn("483.36 元", prompt)
+
+        hk_prompt = analyzer._format_prompt(
+            {
+                "code": "HK02513",
+                "stock_name": "智谱",
+                "date": "2026-08-10",
+                "today": {"close": 1252.0},
+                "realtime": {"price": 1252.0},
+            },
+            "智谱",
+        )
+        self.assertIn("| 交易币种 | HKD（港元） |", hk_prompt)
+        self.assertIn("1252.0 港元", hk_prompt)
+
     def test_analysis_prompt_enforces_cold_evidence_hierarchy(self) -> None:
         with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
             analyzer = GeminiAnalyzer()

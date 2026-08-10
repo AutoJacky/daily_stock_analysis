@@ -2550,6 +2550,32 @@ class NotificationService(
         quote_fields = ('date', 'close', 'prev_close', 'open', 'high', 'low', 'volume')
         if any(not self._push_value_available(snapshot.get(key)) for key in quote_fields):
             issues.append("当日行情 OHLC/前收盘/成交量不完整")
+        else:
+            close_value = _safe_float(snapshot.get('close'))
+            prev_close_value = _safe_float(snapshot.get('prev_close'))
+            open_value = _safe_float(snapshot.get('open'))
+            high_value = _safe_float(snapshot.get('high'))
+            low_value = _safe_float(snapshot.get('low'))
+            pct_value = _safe_float(snapshot.get('pct_chg'))
+            if (
+                close_value is not None
+                and prev_close_value is not None
+                and prev_close_value > 0
+                and pct_value is not None
+            ):
+                derived_pct = (
+                    (close_value - prev_close_value) / prev_close_value * 100
+                )
+                if abs(derived_pct - pct_value) > 0.06:
+                    issues.append("当日涨跌幅与收盘/前收盘不一致")
+            if all(
+                value is not None
+                for value in (open_value, high_value, low_value, close_value)
+            ) and not (
+                low_value <= open_value <= high_value
+                and low_value <= close_value <= high_value
+            ):
+                issues.append("当日行情 OHLC 关系不合法")
 
         dashboard = (
             result.dashboard
@@ -2748,6 +2774,10 @@ class NotificationService(
         "CNY": "元",
         "RMB": "元",
         "CNH": "元",
+        "JPY": "日元",
+        "KRW": "韩元",
+        "EUR": "欧元",
+        "GBP": "英镑",
         "TWD": "新台币",  # 台股 (TWSE/TPEx) 以新台币计价，避免与 A 股「元」(人民币) 混淆
     }
 
@@ -2766,6 +2796,8 @@ class NotificationService(
         sign = "-" if amount < 0 else ""
         abs_amount = abs(amount)
         suffix = cls._CURRENCY_SUFFIX.get((currency or "").upper(), "元")
+        if abs_amount >= 1e12:
+            return f"{sign}{abs_amount / 1e12:.2f} 万亿{suffix}"
         if abs_amount >= 1e8:
             return f"{sign}{abs_amount / 1e8:.2f} 亿{suffix}"
         if abs_amount >= 1e4:

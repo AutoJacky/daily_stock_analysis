@@ -111,6 +111,8 @@ _DAILY_MARKET_CONTEXT_SERVICE_LOCK_INIT_GUARD = threading.Lock()
 _PUSH_READINESS_REPAIR_COMPONENTS = {
     "股票名称或代码未确认": {"identity"},
     "当日行情 OHLC/前收盘/成交量不完整": {"daily", "quote"},
+    "当日涨跌幅与收盘/前收盘不一致": {"decision"},
+    "当日行情 OHLC 关系不合法": {"daily", "quote"},
     "MA5/MA10/MA20 技术基线不完整": {"daily", "technical"},
     "最新报告期及核心财务指标不完整": {"fundamental"},
     "近期新闻/公告缺少日期、来源和可访问链接": {"intelligence"},
@@ -985,6 +987,7 @@ class StockAnalysisPipeline:
                 'name': getattr(realtime_quote, 'name', ''),
                 'price': getattr(realtime_quote, 'price', None),
                 'change_pct': getattr(realtime_quote, 'change_pct', None),
+                'currency': getattr(realtime_quote, 'currency', None),
                 'volume_ratio': volume_ratio,
                 'volume_ratio_desc': self._describe_volume_ratio(volume_ratio) if volume_ratio else '无数据',
                 'turnover_rate': getattr(realtime_quote, 'turnover_rate', None),
@@ -1045,14 +1048,65 @@ class StockAnalysisPipeline:
                 source = getattr(realtime_quote, 'source', None)
                 source_name = getattr(source, 'value', source)
                 source_name = str(source_name) if source_name is not None else 'unknown'
-                open_p = getattr(realtime_quote, 'open_price', None) or getattr(
-                    realtime_quote, 'pre_close', None
-                ) or yesterday_close or orig_today.get('open') or price
-                high_p = getattr(realtime_quote, 'high', None) or price
-                low_p = getattr(realtime_quote, 'low', None) or price
+                # Keep OHLC internally consistent when a realtime provider only
+                # returns last price.  The old order used yesterday's close as
+                # today's open and last price as both high/low, producing rows
+                # such as open=1087, low=1252, which is arithmetically invalid.
+                open_p = (
+                    getattr(realtime_quote, 'open_price', None)
+                    or orig_today.get('open')
+                    or getattr(realtime_quote, 'pre_close', None)
+                    or yesterday_close
+                    or price
+                )
+                high_p = getattr(realtime_quote, 'high', None) or orig_today.get('high') or price
+                low_p = getattr(realtime_quote, 'low', None) or orig_today.get('low') or price
                 vol = getattr(realtime_quote, 'volume', None)
                 amt = getattr(realtime_quote, 'amount', None)
-                pct = getattr(realtime_quote, 'change_pct', None)
+                provider_pct = getattr(realtime_quote, 'change_pct', None)
+                # Percentage conventions differ across quote feeds, and some
+                # fast-info endpoints return a value inconsistent with the
+                # close/pre-close pair.  The report displays ``yesterday.close``
+                # as prev_close, so derive pct_chg from that exact pair.  Only
+                # fall back to the provider percentage when no valid baseline
+                # exists.
+                pct = None
+                baseline_value = None
+                for baseline in (
+                    yesterday_close,
+                    getattr(realtime_quote, 'pre_close', None),
+                ):
+                    try:
+                        candidate = float(baseline)
+                    except (TypeError, ValueError):
+                        continue
+                    if candidate > 0 and candidate == candidate:
+                        baseline_value = candidate
+                        break
+                if baseline_value is not None:
+                    pct = (float(price) - baseline_value) / baseline_value * 100
+                if pct is None:
+                    pct = provider_pct
+                else:
+                    try:
+                        provider_pct_value = float(provider_pct)
+                    except (TypeError, ValueError):
+                        provider_pct_value = None
+                    if (
+                        provider_pct_value is not None
+                        and abs(provider_pct_value - pct) > 0.05
+                    ):
+                        logger.warning(
+                            "[%s] 实时涨跌幅与收盘/前收盘不一致，采用算术复算: "
+                            "provider=%s derived=%.4f price=%s prev_close=%s",
+                            enhanced.get('code'),
+                            provider_pct_value,
+                            pct,
+                            price,
+                            baseline_value,
+                        )
+                if isinstance(enhanced.get('realtime'), dict) and pct is not None:
+                    enhanced['realtime']['change_pct'] = pct
                 fetched_at = getattr(realtime_quote, 'fetched_at', None)
                 provider_timestamp = getattr(realtime_quote, 'provider_timestamp', None)
                 fallback_from = getattr(realtime_quote, 'fallback_from', None)
