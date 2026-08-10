@@ -1887,6 +1887,41 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         )
 
     @mock.patch("src.notification.get_config")
+    def test_market_snapshot_names_trading_currency(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config()
+        service = NotificationService()
+        result = AnalysisResult(
+            code="HK02513",
+            name="智谱",
+            sentiment_score=39,
+            trend_prediction="震荡",
+            operation_advice="观望",
+            analysis_summary="等待确认",
+            market_snapshot={
+                "currency": "HKD",
+                "close": "1252.00",
+                "prev_close": "1087.00",
+                "open": "1120.00",
+                "high": "1300.00",
+                "low": "1108.00",
+                "pct_chg": "15.18%",
+                "change_amount": "165.00",
+                "amplitude": "17.66%",
+                "volume": "494.60 万股",
+                "amount": "62.16 亿港元",
+            },
+        )
+        lines = []
+
+        service._append_market_snapshot(lines, result)
+        output = "\n".join(lines)
+
+        self.assertIn("计价币种**：HKD（港元）", output)
+        self.assertIn("62.16 亿港元", output)
+
+    @mock.patch("src.notification.get_config")
     def test_related_boards_drops_signal_columns_when_no_sector_data(
         self, mock_get_config: mock.MagicMock
     ):

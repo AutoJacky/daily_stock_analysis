@@ -2743,10 +2743,18 @@ class NotificationService(
 
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
+        currency_code = str(snapshot.get('currency') or '').strip().upper()
+        currency_label = self._CURRENCY_SUFFIX.get(currency_code, currency_code)
+        currency_note = (
+            f"> **计价币种**：{currency_code}（{currency_label}）"
+            if report_language == "zh"
+            else f"> **Quote currency**: {currency_code} ({currency_label})"
+        ) if currency_code else ""
 
         lines.extend([
             f"### 📈 {labels['market_snapshot_heading']}",
             "",
+            *([currency_note, ""] if currency_note else []),
             f"| {labels['close_label']} | {labels['prev_close_label']} | {labels['open_label']} | {labels['high_label']} | {labels['low_label']} | {labels['change_pct_label']} | {labels['change_amount_label']} | {labels['amplitude_label']} | {labels['volume_label']} | {labels['amount_label']} |",
             "|------|------|------|------|------|-------|-------|------|--------|--------|",
             f"| {snapshot.get('close', 'N/A')} | {snapshot.get('prev_close', 'N/A')} | "

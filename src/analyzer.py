@@ -4323,17 +4323,7 @@ class GeminiAnalyzer:
         pct_chg_label = "实时涨跌幅" if realtime_overlay_quote else "涨跌幅"
         volume_label = "实时成交量" if realtime_overlay_quote else "成交量"
         amount_label = "实时成交额" if realtime_overlay_quote else "成交额"
-        market = detect_market(code)
-        currency_code = str((
-            (context.get('realtime') or {}).get('currency')
-            if isinstance(context.get('realtime'), dict)
-            else ''
-        ) or '').strip().upper()
-        if not currency_code:
-            currency_code = {
-                'cn': 'CNY', 'hk': 'HKD', 'us': 'USD', 'jp': 'JPY',
-                'kr': 'KRW', 'tw': 'TWD',
-            }.get(market, 'CNY')
+        currency_code = self._resolve_market_currency(context)
         currency_label = (
             {
                 'CNY': '元', 'HKD': '港元', 'USD': '美元', 'JPY': '日元',
@@ -4357,7 +4347,7 @@ class GeminiAnalyzer:
             [
                 f"| {pct_chg_label} | {today.get('pct_chg', 'N/A')}% |",
                 f"| {volume_label} | {self._format_volume(today.get('volume'))} |",
-                f"| {amount_label} | {self._format_amount(today.get('amount'))} |",
+            f"| {amount_label} | {self._format_amount(today.get('amount'), currency_code)} |",
             ]
         )
         quote_rows_text = "\n".join(quote_rows)
@@ -4423,8 +4413,8 @@ class GeminiAnalyzer:
 | **换手率** | **{rt.get('turnover_rate', 'N/A')}%** | |
 | 市盈率(动态) | {rt.get('pe_ratio', 'N/A')} | |
 | 市净率 | {rt.get('pb_ratio', 'N/A')} | |
-| 总市值 | {self._format_amount(rt.get('total_mv'))} | |
-| 流通市值 | {self._format_amount(rt.get('circ_mv'))} | |
+| 总市值 | {self._format_amount(rt.get('total_mv'), currency_code)} | |
+| 流通市值 | {self._format_amount(rt.get('circ_mv'), currency_code)} | |
 | 60日涨跌幅 | {rt.get('change_60d', 'N/A')}% | 中期表现 |
 """
 
@@ -4855,16 +4845,47 @@ class GeminiAnalyzer:
         else:
             return f"{volume:.0f} 股"
     
-    def _format_amount(self, amount: Optional[float]) -> str:
+    def _resolve_market_currency(self, context: Dict[str, Any]) -> str:
+        """Resolve the trading currency once for prompts and rendered facts."""
+        realtime = context.get('realtime')
+        currency = str(
+            (realtime.get('currency') if isinstance(realtime, dict) else '') or ''
+        ).strip().upper()
+        if currency:
+            return currency
+        return {
+            'cn': 'CNY',
+            'hk': 'HKD',
+            'us': 'USD',
+            'jp': 'JPY',
+            'kr': 'KRW',
+            'tw': 'TWD',
+        }.get(detect_market(str(context.get('code') or '')), 'CNY')
+
+    def _format_amount(
+        self,
+        amount: Optional[float],
+        currency: Optional[str] = None,
+    ) -> str:
         """格式化成交额显示"""
         if amount is None:
             return 'N/A'
-        if amount >= 1e8:
-            return f"{amount / 1e8:.2f} 亿元"
-        elif amount >= 1e4:
-            return f"{amount / 1e4:.2f} 万元"
+        suffix = {
+            'CNY': '元', 'RMB': '元', 'CNH': '元', 'HKD': '港元',
+            'USD': '美元', 'JPY': '日元', 'KRW': '韩元',
+            'TWD': '新台币', 'EUR': '欧元', 'GBP': '英镑',
+        }.get(str(currency or 'CNY').upper(), str(currency or 'CNY').upper())
+        value = float(amount)
+        sign = '-' if value < 0 else ''
+        absolute = abs(value)
+        if absolute >= 1e12:
+            return f"{sign}{absolute / 1e12:.2f} 万亿{suffix}"
+        if absolute >= 1e8:
+            return f"{sign}{absolute / 1e8:.2f} 亿{suffix}"
+        elif absolute >= 1e4:
+            return f"{sign}{absolute / 1e4:.2f} 万{suffix}"
         else:
-            return f"{amount:.0f} 元"
+            return f"{sign}{absolute:.0f} {suffix}"
 
     def _format_percent(self, value: Optional[float]) -> str:
         """格式化百分比显示"""
@@ -4914,6 +4935,7 @@ class GeminiAnalyzer:
 
         snapshot = {
             "date": context.get('date', '未知'),
+            "currency": self._resolve_market_currency(context),
             "close": self._format_price(close),
             "open": self._format_price(today.get('open')),
             "high": self._format_price(high),
@@ -4925,7 +4947,9 @@ class GeminiAnalyzer:
             "change_amount": self._format_price(change_amount),
             "amplitude": self._format_percent(amplitude),
             "volume": self._format_volume(today.get('volume')),
-            "amount": self._format_amount(today.get('amount')),
+            "amount": self._format_amount(
+                today.get('amount'), self._resolve_market_currency(context)
+            ),
         }
 
         if realtime:
