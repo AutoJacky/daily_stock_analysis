@@ -22,6 +22,7 @@ def _price_metric(symbol: str, name: str, change_pct: float, *, as_of: str = "20
         "volume": 120.0,
         "average_volume_20": 100.0,
         "volume_ratio_20d": 1.2,
+        "volume_observations": 20,
         "as_of": as_of,
         "source": "Yahoo Finance/yfinance",
     }
@@ -118,11 +119,25 @@ def _overview(context=None) -> MarketOverview:
     return MarketOverview(
         date=date,
         indices=[
-            MarketIndex(code="SPX", name="标普500", current=6400, change_pct=0.7, trade_date=date),
-            MarketIndex(code="IXIC", name="纳斯达克", current=23000, change_pct=1.0, trade_date=date),
-            MarketIndex(code="DJI", name="道琼斯", current=46000, change_pct=0.3, trade_date=date),
-            MarketIndex(code="RUT", name="罗素2000", current=2500, change_pct=0.9, trade_date=date),
-            MarketIndex(code="VIX", name="VIX", current=17, change_pct=-3.0, trade_date=date),
+            MarketIndex(
+                code=code,
+                name=name,
+                current=current,
+                change_pct=change_pct,
+                prev_close=current / (1 + change_pct / 100),
+                open=current - 10,
+                high=current + 20,
+                low=current - 20,
+                trade_date=date,
+                source="Yahoo Finance/yfinance",
+            )
+            for code, name, current, change_pct in (
+                ("SPX", "标普500", 6400, 0.7),
+                ("IXIC", "纳斯达克", 23000, 1.0),
+                ("DJI", "道琼斯", 46000, 0.3),
+                ("RUT", "罗素2000", 2500, 0.9),
+                ("VIX", "VIX", 17, -3.0),
+            )
         ],
         indices_attempted=True,
         us_context_attempted=True,
@@ -164,7 +179,7 @@ def test_get_us_market_context_builds_complete_verified_contract():
     with patch.object(fetcher, "_fetch_us_etf_metrics", return_value=metrics), patch.object(
         fetcher,
         "_fetch_fred_metric",
-        side_effect=lambda series_id: _fred_metric(series_id),
+        side_effect=lambda series_id, _as_of="": _fred_metric(series_id),
     ):
         context = fetcher.get_us_market_context()
 

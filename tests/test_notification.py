@@ -706,7 +706,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("持有者", digest)
         self.assertIn("财报与估值", digest)
         self.assertIn("你现在怎么做", digest)
-        self.assertIn("数据可信度", digest)
+        self.assertIn("核心证据", digest)
         self.assertIn("全部自选，一眼分组", digest)
         self.assertIn("综合分：** 只用于同批股票排序，不是上涨概率", digest)
         self.assertTrue(service.send_to_pushplus(digest))
@@ -770,6 +770,67 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         self.assertIn("美股复盘·自选决策", digest)
         self.assertIn("持有者保持/观察", digest)
+
+    def test_pushplus_digest_does_not_treat_offshore_flow_as_core_gap(self):
+        service = NotificationService()
+        result = AnalysisResult(
+            code="AMD",
+            name="Advanced Micro Devices, Inc.",
+            sentiment_score=60,
+            trend_prediction="观望",
+            operation_advice="持有观察",
+            confidence_level="中",
+            analysis_summary="等待量价与业绩共振。",
+            dashboard={
+                "core_conclusion": {
+                    "one_sentence": "等待量价与业绩共振。",
+                    "position_advice": {
+                        "no_position": "等待突破确认。",
+                        "has_position": "持有并严守风险线。",
+                    },
+                },
+                "data_perspective": {
+                    "price_position": {"ma5": 180, "ma10": 176, "ma20": 170}
+                },
+                "intelligence": {
+                    "verified_events": [{
+                        "published_date": "2026-08-08",
+                        "source": "SEC",
+                        "title": "AMD filing",
+                        "url": "https://www.sec.gov/example",
+                    }]
+                },
+                "phase_decision": {
+                    "data_limitations": ["境外市场无 A 股式主力资金流口径"]
+                },
+            },
+            market_snapshot={
+                "date": "2026-08-10",
+                "close": 181.0,
+                "prev_close": 179.0,
+                "open": 179.5,
+                "high": 182.0,
+                "low": 178.0,
+                "volume": 50000000,
+                "pct_chg": 1.1173,
+            },
+        )
+        result.fundamental_context = {
+            "earnings": {"status": "ok", "data": {"financial_report": {
+                "report_date": "2026-06-30",
+                "revenue": 100,
+                "net_profit_parent": 20,
+            }}},
+            "growth": {"status": "ok", "data": {"revenue_yoy": 8.0}},
+        }
+
+        digest = service.generate_pushplus_digest([result], requested_codes=["AMD"])
+
+        self.assertIn("核心证据 通过", digest)
+        self.assertIn("模型置信度 中", digest)
+        self.assertIn("增强项说明", digest)
+        self.assertNotIn("⚠️ 数据不足", digest)
+        self.assertNotIn("核心证据未通过", digest)
 
     def test_pushplus_digest_labels_hk_jp_companion_report(self):
         service = NotificationService()

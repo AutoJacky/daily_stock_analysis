@@ -67,8 +67,12 @@ class MarketIndex:
     prev_close: float = 0.0      # 昨收点位
     volume: float = 0.0          # 成交量（手）
     amount: float = 0.0          # 成交额（元）
+    previous_amount: float = 0.0 # 前一交易日成交额（元）
     amplitude: float = 0.0       # 振幅(%)
     trade_date: str = ""         # 数据对应交易日
+    previous_trade_date: str = "" # 前一交易日
+    source: str = ""             # 行情数据源
+    fetched_at: str = ""         # 抓取时间（含时区）
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -80,10 +84,15 @@ class MarketIndex:
             'open': self.open,
             'high': self.high,
             'low': self.low,
+            'prev_close': self.prev_close,
             'volume': self.volume,
             'amount': self.amount,
+            'previous_amount': self.previous_amount,
             'amplitude': self.amplitude,
             'trade_date': self.trade_date,
+            'previous_trade_date': self.previous_trade_date,
+            'source': self.source,
+            'fetched_at': self.fetched_at,
         }
 
 
@@ -98,6 +107,12 @@ class MarketOverview:
     limit_up_count: int = 0             # 涨停家数
     limit_down_count: int = 0           # 跌停家数
     total_amount: float = 0.0           # 两市成交额（亿元）
+    previous_total_amount: float = 0.0  # 前一交易日两市成交额（亿元）
+    turnover_change: float = 0.0        # 两市成交额环比（亿元）
+    turnover_change_pct: float = 0.0    # 两市成交额环比（%）
+    turnover_trade_date: str = ""       # 前一交易日日期
+    market_stats_source: str = ""       # 宽度/涨跌停统计来源
+    market_stats_trade_date: str = ""   # 宽度/涨跌停快照对应交易日
     # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
     
     # 板块涨幅榜
@@ -230,10 +245,12 @@ class MarketAnalyzer:
         Only those two non-overlapping primary indices are summed; subset indices
         such as CSI 300, SSE 50, STAR 50, and ChiNext are deliberately ignored.
         """
-        if self.region != "cn" or self._is_positive_number(overview.total_amount):
+        if self.region != "cn":
             return
 
         exchange_amounts: Dict[str, float] = {}
+        previous_exchange_amounts: Dict[str, float] = {}
+        previous_dates: List[str] = []
         for index in overview.indices:
             code = str(index.code or "").strip().upper()
             name = str(index.name or "").strip()
@@ -250,18 +267,44 @@ class MarketAnalyzer:
             # Index providers usually return yuan, while MarketOverview stores
             # A-share aggregate turnover in CNY 100m.
             exchange_amounts[exchange] = amount / 1e8 if amount > 1e6 else amount
+            if self._is_positive_number(index.previous_amount):
+                previous_amount = float(index.previous_amount)
+                previous_exchange_amounts[exchange] = (
+                    previous_amount / 1e8
+                    if previous_amount > 1e6
+                    else previous_amount
+                )
+                if index.previous_trade_date:
+                    previous_dates.append(index.previous_trade_date)
 
         if {"sh", "sz"}.issubset(exchange_amounts):
+            provider_total = float(overview.total_amount or 0.0)
             overview.total_amount = round(
                 exchange_amounts["sh"] + exchange_amounts["sz"],
                 2,
             )
             logger.info(
                 "[大盘] %s action=recover_total_amount status=success "
-                "source=primary_indices amount=%.0f亿",
+                "source=primary_indices amount=%.0f亿 provider_amount=%.0f亿",
                 self._log_context(),
                 overview.total_amount,
+                provider_total,
             )
+        if {"sh", "sz"}.issubset(previous_exchange_amounts):
+            overview.previous_total_amount = round(
+                previous_exchange_amounts["sh"]
+                + previous_exchange_amounts["sz"],
+                2,
+            )
+            overview.turnover_change = round(
+                overview.total_amount - overview.previous_total_amount,
+                2,
+            )
+            overview.turnover_change_pct = round(
+                overview.turnover_change / overview.previous_total_amount * 100.0,
+                4,
+            )
+            overview.turnover_trade_date = max(previous_dates) if previous_dates else ""
 
     def _assess_market_data_quality(self, overview: MarketOverview) -> Dict[str, Any]:
         """Assess whether inputs are sufficient for directional market analysis."""
@@ -282,8 +325,23 @@ class MarketAnalyzer:
                 for index in valid_indices
                 if index.code != "VIX" and index.trade_date == latest_index_date
             ]
+            aligned_codes = {index.code for index in aligned_core_indices}
+            required_codes = {"SPX", "IXIC", "DJI"}
             required_index_count = 3 if overview.indices_attempted else 1
-            indices_available = len(aligned_core_indices) >= required_index_count
+            indices_available = bool(
+                len(aligned_core_indices) >= required_index_count
+                and (
+                    not overview.indices_attempted
+                    or required_codes.issubset(aligned_codes)
+                )
+                and all(
+                    self._is_positive_number(index.prev_close)
+                    and self._is_positive_number(index.open)
+                    and self._is_positive_number(index.high)
+                    and self._is_positive_number(index.low)
+                    for index in aligned_core_indices
+                )
+            )
             us_context = overview.us_market_context or {}
             us_quality = us_context.get("quality") or {}
             participation = us_context.get("participation") or {}
@@ -303,9 +361,12 @@ class MarketAnalyzer:
             turnover_available = bool(
                 us_quality.get("liquidity_ready")
                 and self._is_positive_number(participation.get("spy_volume_ratio_20d"))
+                and 0.25 <= float(participation.get("spy_volume_ratio_20d")) <= 4.0
             )
             sector_rankings_available = bool(
                 us_quality.get("sector_ready")
+                and int(sector_rankings.get("coverage") or 0)
+                == int(sector_rankings.get("universe") or 11)
                 and sector_rankings.get("top")
                 and sector_rankings.get("bottom")
             )
@@ -314,7 +375,29 @@ class MarketAnalyzer:
                 us_quality.get("macro_ready")
                 and macro.get("DGS2")
                 and macro.get("DGS10")
+                and all(
+                    bool(str((macro.get(series_id) or {}).get("as_of") or ""))
+                    and str((macro.get(series_id) or {}).get("as_of") or "")
+                    <= latest_index_date
+                    for series_id in ("DGS2", "DGS10")
+                )
             )
+
+            proxy_consistent = True
+            index_by_code = {index.code: index for index in aligned_core_indices}
+            proxies = us_context.get("proxies") or {}
+            for index_code, proxy_code, tolerance in (
+                ("SPX", "SPY", 0.20),
+                ("NDX", "QQQ", 0.25),
+                ("RUT", "IWM", 0.35),
+            ):
+                index = index_by_code.get(index_code)
+                proxy = proxies.get(proxy_code) or {}
+                if not index or proxy.get("change_pct") is None:
+                    continue
+                if abs(float(index.change_pct) - float(proxy["change_pct"])) > tolerance:
+                    proxy_consistent = False
+                    break
 
             missing_core_fields: List[str] = []
             if overview.indices_attempted and not indices_available:
@@ -329,6 +412,8 @@ class MarketAnalyzer:
                 missing_core_fields.append("us_sector_etfs")
             if overview.us_context_attempted and not macro_available:
                 missing_core_fields.append("us_treasury_yields")
+            if overview.us_context_attempted and not proxy_consistent:
+                missing_core_fields.append("us_index_proxy_consistency")
 
             missing_optional_fields: List[str] = []
             if "DTWEXBGS" not in macro:
@@ -349,23 +434,47 @@ class MarketAnalyzer:
                 "sector_rankings_available": sector_rankings_available,
                 "concept_rankings_available": concept_rankings_available,
                 "macro_available": macro_available,
+                "index_proxy_consistent": proxy_consistent,
                 "trade_date_aligned": date_aligned,
                 "missing_core_fields": missing_core_fields,
                 "missing_optional_fields": missing_optional_fields,
             }
 
-        required_index_count = 2 if self.region == "cn" and overview.indices_attempted else 1
-        indices_available = len(valid_indices) >= required_index_count
+        required_index_count = 6 if self.region == "cn" and overview.indices_attempted else 1
+        indices_available = bool(
+            len(valid_indices) >= required_index_count
+            and (
+                self.region != "cn"
+                or not overview.indices_attempted
+                or all(
+                    self._is_positive_number(index.prev_close)
+                    and self._is_positive_number(index.open)
+                    and self._is_positive_number(index.high)
+                    and self._is_positive_number(index.low)
+                    and self._is_positive_number(index.amount)
+                    and bool(index.trade_date)
+                    for index in valid_indices
+                )
+            )
+        )
 
         breadth_total = (
             max(int(overview.up_count or 0), 0)
             + max(int(overview.down_count or 0), 0)
             + max(int(overview.flat_count or 0), 0)
         )
+        market_stats_date_aligned = bool(
+            not overview.market_stats_attempted
+            or (
+                overview.market_stats_trade_date
+                and overview.market_stats_trade_date == overview.date
+            )
+        )
         breadth_available = bool(
             not self.profile.has_market_stats
             or (
                 breadth_total > 0
+                and market_stats_date_aligned
                 and (
                     not overview.market_stats_attempted
                     or overview.market_stats_available
@@ -376,10 +485,28 @@ class MarketAnalyzer:
             not self.profile.has_market_stats
             or self._is_positive_number(overview.total_amount)
         )
+        turnover_comparison_available = bool(
+            not self.profile.has_market_stats
+            or (
+                self._is_positive_number(overview.previous_total_amount)
+                and bool(overview.turnover_trade_date)
+            )
+        )
+        sector_rows = list(overview.top_sectors or []) + list(overview.bottom_sectors or [])
         sector_rankings_available = bool(
             not self.profile.has_sector_rankings
-            or overview.top_sectors
-            or overview.bottom_sectors
+            or (
+                sector_rows
+                and (
+                    self.region != "cn"
+                    or not overview.indices_attempted
+                    or all(
+                        isinstance(item, dict)
+                        and str(item.get("classification") or "").upper() == "SW1"
+                        for item in sector_rows
+                    )
+                )
+            )
         )
         concept_rankings_available = bool(
             not self.profile.has_sector_rankings
@@ -399,9 +526,27 @@ class MarketAnalyzer:
         if (
             self.profile.has_market_stats
             and overview.market_stats_attempted
+            and not market_stats_date_aligned
+        ):
+            missing_core_fields.append("market_breadth_trade_date")
+        if (
+            self.profile.has_market_stats
+            and overview.market_stats_attempted
             and not turnover_available
         ):
             missing_core_fields.append("aggregate_turnover")
+        if (
+            self.profile.has_market_stats
+            and overview.market_stats_attempted
+            and not turnover_comparison_available
+        ):
+            missing_core_fields.append("prior_session_turnover")
+        if (
+            self.region == "cn"
+            and overview.indices_attempted
+            and not sector_rankings_available
+        ):
+            missing_core_fields.append("sw1_sector_rankings")
 
         missing_optional_fields: List[str] = []
         if self.profile.has_sector_rankings and not sector_rankings_available:
@@ -424,6 +569,8 @@ class MarketAnalyzer:
             "valid_index_count": len(valid_indices),
             "breadth_available": breadth_available,
             "turnover_available": turnover_available,
+            "turnover_comparison_available": turnover_comparison_available,
+            "market_stats_date_aligned": market_stats_date_aligned,
             "sector_rankings_available": sector_rankings_available,
             "concept_rankings_available": concept_rankings_available,
             "missing_core_fields": missing_core_fields,
@@ -664,14 +811,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         # 1. 获取主要指数行情（按 region 切换 A 股/美股）
         overview.indices = self._get_main_indices()
         overview.indices_attempted = True
-        if self.region == "us":
-            trade_dates = [
-                index.trade_date
-                for index in overview.indices
-                if index.code != "VIX" and index.trade_date
-            ]
-            if trade_dates:
-                overview.date = max(trade_dates)
+        trade_dates = [
+            index.trade_date
+            for index in overview.indices
+            if index.code != "VIX" and index.trade_date
+        ]
+        if trade_dates:
+            overview.date = max(trade_dates)
 
         # 2. 美股使用透明等价指标；A股继续使用交易所宽度统计。
         if self.region == "us":
@@ -703,20 +849,54 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
             if data_list:
                 for item in data_list:
+                    current = float(item.get('current') or 0.0)
+                    prev_close = float(item.get('prev_close') or 0.0)
+                    provider_change = float(item.get('change') or 0.0)
+                    provider_change_pct = float(item.get('change_pct') or 0.0)
+
+                    # 涨跌额/幅必须与报告展示的现价和昨收同源且
+                    # 算术一致。这里是所有指数供应商的最后一道校验，
+                    # 避免任一备用源把缺失值默认成真实的 0.00%。
+                    if current > 0 and prev_close > 0:
+                        derived_change = current - prev_close
+                        derived_change_pct = derived_change / prev_close * 100.0
+                        if (
+                            abs(provider_change - derived_change) > 0.01
+                            or abs(provider_change_pct - derived_change_pct) > 0.03
+                        ):
+                            logger.warning(
+                                "[大盘] %s index=%s action=reconcile_index_quote "
+                                "provider_change=%.4f provider_pct=%.4f "
+                                "derived_change=%.4f derived_pct=%.4f",
+                                self._log_context(),
+                                item.get('code', ''),
+                                provider_change,
+                                provider_change_pct,
+                                derived_change,
+                                derived_change_pct,
+                            )
+                        provider_change = derived_change
+                        provider_change_pct = derived_change_pct
                     index = MarketIndex(
                         code=item['code'],
                         name=item['name'],
-                        current=item['current'],
-                        change=item['change'],
-                        change_pct=item['change_pct'],
+                        current=current,
+                        change=provider_change,
+                        change_pct=provider_change_pct,
                         open=item['open'],
                         high=item['high'],
                         low=item['low'],
-                        prev_close=item['prev_close'],
+                        prev_close=prev_close,
                         volume=item['volume'],
                         amount=item['amount'],
+                        previous_amount=float(item.get('previous_amount') or 0.0),
                         amplitude=item['amplitude'],
                         trade_date=str(item.get("trade_date") or ""),
+                        previous_trade_date=str(
+                            item.get("previous_trade_date") or ""
+                        ),
+                        source=str(item.get("source") or ""),
+                        fetched_at=str(item.get("fetched_at") or ""),
                     )
                     indices.append(index)
 
@@ -778,6 +958,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 overview.limit_up_count = stats.get('limit_up_count', 0)
                 overview.limit_down_count = stats.get('limit_down_count', 0)
                 overview.total_amount = stats.get('total_amount', 0.0)
+                overview.market_stats_source = str(stats.get('_source') or '')
+                overview.market_stats_trade_date = self._resolve_cn_stats_trade_date()
                 overview.market_stats_available = bool(
                     overview.up_count
                     + overview.down_count
@@ -809,12 +991,45 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         except Exception as e:
             logger.error("[大盘] %s action=get_market_stats status=failed error=%s", self._log_context(), e)
 
+    @staticmethod
+    def _resolve_cn_stats_trade_date() -> str:
+        """Date a realtime A-share breadth snapshot actually represents.
+
+        Before the close, daily bars intentionally stop at the previous fully
+        completed session, while realtime breadth already belongs to today's
+        partial session.  Labelling the two dates separately lets validation
+        block that otherwise invisible mixed-session report.
+        """
+        try:
+            from src.core.trading_calendar import (
+                MarketPhase,
+                get_effective_trading_date,
+                get_market_now,
+                infer_market_phase,
+            )
+
+            phase = infer_market_phase("cn")
+            if phase in {
+                MarketPhase.INTRADAY,
+                MarketPhase.LUNCH_BREAK,
+                MarketPhase.CLOSING_AUCTION,
+            }:
+                return get_market_now("cn").date().isoformat()
+            return get_effective_trading_date("cn").isoformat()
+        except Exception as exc:
+            logger.warning("[MarketStats] 无法标记A股宽度交易日: %s", exc)
+            return ""
+
     def _get_sector_rankings(self, overview: MarketOverview):
         """获取板块涨跌榜"""
         try:
             logger.info("[大盘] %s action=get_sector_rankings status=start", self._log_context())
 
-            top_sectors, bottom_sectors = self.data_manager.get_sector_rankings(5)
+            sw1_method = getattr(self.data_manager, "get_sw1_sector_rankings", None)
+            if callable(sw1_method):
+                top_sectors, bottom_sectors = sw1_method(5)
+            else:
+                top_sectors, bottom_sectors = self.data_manager.get_sector_rankings(5)
 
             if top_sectors or bottom_sectors:
                 overview.top_sectors = top_sectors
@@ -1139,6 +1354,12 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 "limit_up_count": overview.limit_up_count,
                 "limit_down_count": overview.limit_down_count,
                 "total_amount": overview.total_amount,
+                "previous_total_amount": overview.previous_total_amount,
+                "turnover_change": overview.turnover_change,
+                "turnover_change_pct": overview.turnover_change_pct,
+                "previous_trade_date": overview.turnover_trade_date,
+                "market_stats_trade_date": overview.market_stats_trade_date,
+                "source": overview.market_stats_source,
                 "turnover_unit": self._get_turnover_unit_label(),
             }
 
@@ -1423,7 +1644,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 change = float(item.get("change") or 0.0)
                 if unit == "%":
                     value_text = f"{value:.2f}%"
-                    change_text = f"{change * 100:+.1f}bp"
+                    change_text = f"{change * 100:+.2f}bp"
                 else:
                     value_text = f"{value:.2f}"
                     change_text = f"{change:+.2f}"
@@ -1572,6 +1793,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if index_changes:
             avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"主要指数平均涨跌幅 {avg_change:+.2f}%")
+        if self._is_positive_number(overview.previous_total_amount):
+            direction = "放量" if overview.turnover_change > 0 else "缩量"
+            reasons.append(
+                f"两市成交额较前一交易日{direction} "
+                f"{abs(overview.turnover_change):.0f} 亿"
+                f"（{overview.turnover_change_pct:+.2f}%）"
+            )
         if overview.limit_up_count or overview.limit_down_count:
             reasons.append(f"涨跌停差 {overview.limit_up_count - overview.limit_down_count:+d}")
         if not reasons and overview.total_amount:
@@ -1624,51 +1852,68 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         return reasons[:4]
 
     def _build_indices_block(self, overview: MarketOverview) -> str:
-        """构建指数行情表格"""
+        """Build a mobile-readable index summary plus OHLC audit lines."""
         if not overview.indices:
             return ""
         if self.region == "us":
             if self._get_review_language() == "en":
                 lines = [
-                    "| Index | Last | Change % | Open | High | Low | Amplitude | Trade date |",
-                    "|---|---:|---:|---:|---:|---:|---:|---|",
+                    "| Index | Close | Prior close | Change % | Trade date |",
+                    "|---|---:|---:|---:|---|",
                 ]
+                detail_heading = "**Session OHLC audit**"
             else:
                 lines = [
-                    "| 指数 | 最新 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 交易日 |",
-                    "|---|---:|---:|---:|---:|---:|---:|---|",
+                    "| 指数 | 收盘 | 昨收 | 涨跌幅 | 交易日 |",
+                    "|---|---:|---:|---:|---|",
                 ]
+                detail_heading = "**日内 OHLC 校验**"
+            details: List[str] = []
             for idx in overview.indices:
                 arrow = self._get_index_change_arrow(idx.change_pct)
                 lines.append(
-                    f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | "
-                    f"{self._format_optional_number(idx.open)} | "
-                    f"{self._format_optional_number(idx.high)} | "
-                    f"{self._format_optional_number(idx.low)} | "
-                    f"{self._format_optional_pct(idx.amplitude)} | "
+                    f"| {idx.name} | {idx.current:.2f} | "
+                    f"{self._format_optional_number(idx.prev_close)} | "
+                    f"{arrow} {idx.change_pct:+.2f}% | "
                     f"{idx.trade_date or '-'} |"
                 )
-            return "\n".join(lines)
+                details.append(
+                    f"- **{idx.name}**：开 {self._format_optional_number(idx.open)}｜"
+                    f"高 {self._format_optional_number(idx.high)}｜"
+                    f"低 {self._format_optional_number(idx.low)}｜"
+                    f"振幅 {self._format_optional_pct(idx.amplitude)}"
+                )
+            return "\n".join([*lines, "", detail_heading, *details])
         if self._get_review_language() == "en":
             lines = [
-                f"| Index | Last | Change % | Open | High | Low | Amplitude | Turnover ({self._get_turnover_unit_label()}) |",
-                "|-------|------|----------|------|------|-----|-----------|-----------------|",
+                f"| Index | Close | Prior close | Change % | Turnover ({self._get_turnover_unit_label()}) |",
+                "|---|---:|---:|---:|---:|",
             ]
+            detail_heading = "**Session OHLC audit**"
         else:
             lines = [
-                "| 指数 | 最新 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 成交额(亿) |",
-                "|------|------|--------|------|------|------|------|-----------|",
+                "| 指数 | 收盘 | 昨收 | 涨跌幅 | 成交额(亿) |",
+                "|---|---:|---:|---:|---:|",
             ]
+            detail_heading = "**日内 OHLC 校验**"
+        details = []
         for idx in overview.indices:
             arrow = self._get_index_change_arrow(idx.change_pct)
             amount_raw = idx.amount or 0.0
             amount_str = self._format_turnover_value(amount_raw)
             lines.append(
-                f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | "
-                f"{self._format_optional_number(idx.open)} | {self._format_optional_number(idx.high)} | "
-                f"{self._format_optional_number(idx.low)} | {self._format_optional_pct(idx.amplitude)} | {amount_str} |"
+                f"| {idx.name} | {idx.current:.2f} | "
+                f"{self._format_optional_number(idx.prev_close)} | "
+                f"{arrow} {idx.change_pct:+.2f}% | {amount_str} |"
             )
-        return "\n".join(lines)
+            details.append(
+                f"- **{idx.name}**：开 {self._format_optional_number(idx.open)}｜"
+                f"高 {self._format_optional_number(idx.high)}｜"
+                f"低 {self._format_optional_number(idx.low)}｜"
+                f"振幅 {self._format_optional_pct(idx.amplitude)}｜"
+                f"交易日 {idx.trade_date or '-'}"
+            )
+        return "\n".join([*lines, "", detail_heading, *details])
 
     def _build_sector_block(self, overview: MarketOverview) -> str:
         """Build industry and concept ranking blocks."""
@@ -1716,15 +1961,15 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             leading_title = (
                 "#### 标普行业ETF领涨 Top 5"
                 if self.region == "us"
-                else "#### 行业板块领涨 Top 5"
+                else "#### 申万一级行业领涨 Top 5"
             )
             lagging_title = (
                 "#### 标普行业ETF领跌 Top 5"
                 if self.region == "us"
-                else "#### 行业板块领跌 Top 5"
+                else "#### 申万一级行业领跌 Top 5"
             )
-            append_ranking(leading_title, "行业板块", overview.top_sectors)
-            append_ranking(lagging_title, "行业板块", overview.bottom_sectors)
+            append_ranking(leading_title, "申万一级行业", overview.top_sectors)
+            append_ranking(lagging_title, "申万一级行业", overview.bottom_sectors)
             append_ranking("#### 概念板块领涨 Top 5", "概念板块", overview.top_concepts)
             append_ranking("#### 概念板块领跌 Top 5", "概念板块", overview.bottom_concepts)
         return "\n".join(lines)
@@ -1845,12 +2090,40 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         limit_available = bool(self.profile.has_market_stats and limit_total > 0)
         limit_score = 50
         if limit_available:
-            limit_score = int(overview.limit_up_count / limit_total * 100)
+            # 涨停数容易被小市值题材股放大，单项不允许
+            # 因“几乎全是涨停”而接近满分。
+            limit_score = min(
+                85,
+                int(overview.limit_up_count / limit_total * 100),
+            )
+
+        liquidity_available = bool(
+            self._is_positive_number(overview.total_amount)
+            and self._is_positive_number(overview.previous_total_amount)
+        )
+        liquidity_score = 50
+        if liquidity_available:
+            liquidity_score = int(max(
+                0,
+                min(100, 50 + float(overview.turnover_change_pct) * 2.0),
+            ))
+
+        structure_available = len(index_changes) >= 4
+        structure_score = 50
+        if structure_available:
+            dispersion = max(index_changes) - min(index_changes)
+            avg_change = sum(index_changes) / len(index_changes)
+            structure_score = int(max(
+                0,
+                min(100, 50 + avg_change * 8.0 - dispersion * 12.0),
+            ))
 
         dimensions = {
             "breadth": {"score": breadth_score, "available": breadth_available},
             "index": {"score": index_score, "available": index_available},
             "limit": {"score": limit_score, "available": limit_available},
+            "liquidity": {"score": liquidity_score, "available": liquidity_available},
+            "structure": {"score": structure_score, "available": structure_available},
         }
 
         if not index_available:
@@ -1860,7 +2133,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         else:
             data_quality = "partial"
 
-        score = int(round(breadth_score * 0.45 + index_score * 0.35 + limit_score * 0.20))
+        score = int(round(
+            breadth_score * 0.30
+            + index_score * 0.25
+            + liquidity_score * 0.20
+            + structure_score * 0.15
+            + limit_score * 0.10
+        ))
         if self._get_review_language() == "en":
             if score >= 70:
                 label = "risk-on"
@@ -2456,7 +2735,10 @@ Output the report content directly, no extra commentary.
             labels = {
                 "major_indices": "major indices",
                 "market_breadth": "market breadth",
+                "market_breadth_trade_date": "market-breadth / index trade-date alignment",
                 "aggregate_turnover": "aggregate turnover",
+                "prior_session_turnover": "prior-session turnover",
+                "sw1_sector_rankings": "Shenwan level-1 sector rankings",
             }
             missing_text = ", ".join(labels.get(field, field) for field in missing_fields)
             turnover_status = (
@@ -2495,7 +2777,10 @@ Output the report content directly, no extra commentary.
         labels = {
             "major_indices": "主要指数",
             "market_breadth": "上涨/下跌/平盘家数",
+            "market_breadth_trade_date": "市场宽度与指数交易日对齐",
             "aggregate_turnover": "两市成交额",
+            "prior_session_turnover": "前一交易日可比成交额",
+            "sw1_sector_rankings": "申万一级行业排名",
         }
         missing_text = "、".join(labels.get(field, field) for field in missing_fields)
         turnover_status = (
@@ -2541,8 +2826,9 @@ Output the report content directly, no extra commentary.
             "us_trade_date_alignment": "指数与ETF交易日对齐",
             "us_participation_proxies": "SPY/RSP/IWM/QQQ参与度代理",
             "us_liquidity_proxy": "SPY相对20日均量",
-            "us_sector_etfs": "11个标普行业ETF（至少8个有效）",
+            "us_sector_etfs": "11个标普行业ETF（全部同日有效）",
             "us_treasury_yields": "美国2年/10年期国债收益率",
+            "us_index_proxy_consistency": "指数与对应ETF涨跌方向/幅度交叉校验",
         }
         missing = "、".join(
             labels.get(item, item)
@@ -2582,7 +2868,7 @@ Output the report content directly, no extra commentary.
         """Render a deterministic review without allowing an LLM to rewrite facts."""
         if self.region == "us":
             return self._generate_us_template_review(overview, news, strict=True)
-        review_time = datetime.now().strftime("%H:%M")
+        review_time = datetime.now().astimezone().isoformat(timespec="seconds")
         valid_indices = [
             index
             for index in overview.indices
@@ -2605,6 +2891,26 @@ Output the report content directly, no extra commentary.
             if index_changes
             else 0.0
         )
+        turnover_direction = "放量" if overview.turnover_change > 0 else "缩量"
+        turnover_comparison_zh = (
+            f"较 {overview.turnover_trade_date or '前一交易日'}"
+            f"{turnover_direction} {abs(overview.turnover_change):.0f} 亿"
+            f"（{overview.turnover_change_pct:+.2f}%）"
+        )
+        turnover_comparison_en = (
+            f"{overview.turnover_change:+.0f} ({overview.turnover_change_pct:+.2f}%) "
+            f"vs {overview.turnover_trade_date or 'prior session'}"
+        )
+        index_sources = sorted({index.source for index in valid_indices if index.source})
+        index_source_text = " / ".join(index_sources) or "未标注"
+        fetched_times = sorted({index.fetched_at for index in valid_indices if index.fetched_at})
+        fetched_at_text = fetched_times[-1] if fetched_times else review_time
+        sector_sources = sorted({
+            str(item.get("source") or "")
+            for item in overview.top_sectors + overview.bottom_sectors
+            if isinstance(item, dict) and item.get("source")
+        })
+        sector_source_text = " / ".join(sector_sources) or "未标注"
         score = int(light["score"])
         if score >= 75:
             position_range = "60%-80%"
@@ -2643,15 +2949,16 @@ Output the report content directly, no extra commentary.
         if reference_levels_valid:
             add_trigger_en = (
                 f"A 30-minute close above {reference_index.name} "
-                f"{reference_index.high:.2f}, with the live advancer ratio at or above 60%."
+                f"{reference_index.current:.2f}, with the live advancer ratio at or above 60% "
+                "and projected turnover no lower than the prior session."
             )
             reduce_trigger_en = (
                 f"A 30-minute close below {reference_index.name} "
                 f"{reference_index.low:.2f}, or the live advancer ratio at or below 40%."
             )
             add_trigger_zh = (
-                f"{reference_index.name} 30分钟级别收于 {reference_index.high:.2f} 点上方，"
-                "且实时上涨占比不低于60%。"
+                f"{reference_index.name} 30分钟级别站稳 {reference_index.current:.2f} 点上方，"
+                "实时上涨占比不低于60%，且预估两市成交额不低于前一交易日。"
             )
             reduce_trigger_zh = (
                 f"{reference_index.name} 30分钟级别收于 {reference_index.low:.2f} 点下方，"
@@ -2667,6 +2974,8 @@ Output the report content directly, no extra commentary.
         breadth_score = int((dimensions.get("breadth") or {}).get("score", 50))
         index_score = int((dimensions.get("index") or {}).get("score", 50))
         limit_score = int((dimensions.get("limit") or {}).get("score", 50))
+        liquidity_score = int((dimensions.get("liquidity") or {}).get("score", 50))
+        structure_score = int((dimensions.get("structure") or {}).get("score", 50))
         focus_text = self._format_ranking_summary(overview.top_sectors, limit=3)
         avoid_text = self._format_ranking_summary(overview.bottom_sectors, limit=3)
 
@@ -2678,8 +2987,11 @@ Output the report content directly, no extra commentary.
 ### 1. Validation Status
 - **Core market data**: passed
 - **Valid major indices**: {len(valid_indices)}
-- **Breadth coverage**: {overview.up_count + overview.down_count + overview.flat_count} securities
+- **Market breadth**: {overview.up_count + overview.down_count + overview.flat_count} Shanghai/Shenzhen/Beijing securities
 - **Aggregate turnover**: {overview.total_amount:.0f} {self._get_turnover_unit_label()}
+- **Index source / fetched at**: {index_source_text} / {fetched_at_text}
+- **Breadth source / session**: {overview.market_stats_source or "unlabelled"} / {overview.market_stats_trade_date or "unlabelled"}
+- **Sector taxonomy / source**: Shenwan level-1 / {sector_source_text}
 
 ### 2. Market Breadth & Liquidity
 - Advancers / decliners / flat: {overview.up_count} / {overview.down_count} / {overview.flat_count}
@@ -2687,7 +2999,7 @@ Output the report content directly, no extra commentary.
 - Limit-up / limit-down: {overview.limit_up_count} / {overview.limit_down_count}
 - Average major-index change: {average_change:+.2f}%
 - Aggregate turnover: {overview.total_amount:.0f} {self._get_turnover_unit_label()}
-- No expanding/contracting-turnover claim is made because no prior-session comparable value was validated.
+- Prior-session turnover: {overview.previous_total_amount:.0f}; change {turnover_comparison_en}.
 
 ### 3. Major Indices
 {indices_block or "- No validated index data is available."}
@@ -2700,7 +3012,7 @@ Output the report content directly, no extra commentary.
 
 ### 6. Next-session Quant Plan
 - **Rule posture**: {posture_en}; model portfolio exposure band {position_range}.
-- **Score formula**: breadth {breadth_score} × 45% + index {index_score} × 35% + limit-up/down {limit_score} × 20% = {score}/100.
+- **Score formula**: breadth {breadth_score} × 30% + index {index_score} × 25% + liquidity {liquidity_score} × 20% + index alignment {structure_score} × 15% + limit-up/down {limit_score} × 10% = {score}/100.
 - **Add-risk trigger**: {add_trigger_en} If confirmed, move only toward the upper bound of the exposure band.
 - **Reduce-risk trigger**: {reduce_trigger_en} If confirmed, move toward the lower bound of the exposure band.
 - **Otherwise**: keep exposure inside the band and do not chase an unconfirmed breakout.
@@ -2723,8 +3035,11 @@ Output the report content directly, no extra commentary.
 ### 一、数据校验
 - **核心行情数据**：通过
 - **有效主要指数**：{len(valid_indices)} 个
-- **市场宽度覆盖**：{overview.up_count + overview.down_count + overview.flat_count} 只证券
+- **市场宽度**：沪深京三市共 {overview.up_count + overview.down_count + overview.flat_count} 只证券
 - **两市成交额**：{overview.total_amount:.0f} 亿元
+- **指数来源 / 抓取时间**：{index_source_text} / {fetched_at_text}
+- **宽度与涨跌停来源 / 数据日**：{overview.market_stats_source or "未标注"} / {overview.market_stats_trade_date or "未标注"}
+- **行业分类 / 来源**：申万一级 / {sector_source_text}
 
 ### 二、市场宽度与成交
 - 上涨 / 下跌 / 平盘：{overview.up_count} / {overview.down_count} / {overview.flat_count}
@@ -2732,7 +3047,7 @@ Output the report content directly, no extra commentary.
 - 涨停 / 跌停：{overview.limit_up_count} / {overview.limit_down_count}
 - 主要指数平均涨跌幅：{average_change:+.2f}%
 - 两市成交额：{overview.total_amount:.0f} 亿元
-- 因未校验前一交易日的可比成交额，本报告不作“放量”或“缩量”判断。
+- 前一交易日成交额：{overview.previous_total_amount:.0f} 亿元；{turnover_comparison_zh}。
 
 ### 三、主要指数
 {indices_block or "- 暂无通过校验的指数数据。"}
@@ -2745,7 +3060,7 @@ Output the report content directly, no extra commentary.
 
 ### 六、次日量化计划
 - **规则姿态**：{posture_zh}；模型组合仓位区间 {position_range}。
-- **评分公式**：市场宽度 {breadth_score} × 45% + 指数强弱 {index_score} × 35% + 涨跌停结构 {limit_score} × 20% = {score}/100。
+- **评分公式**：市场宽度 {breadth_score} × 30% + 指数强弱 {index_score} × 25% + 量价配合 {liquidity_score} × 20% + 权重/成长一致性 {structure_score} × 15% + 涨跌停结构 {limit_score} × 10% = {score}/100。
 - **加仓触发**：{add_trigger_zh}满足时只向仓位区间上限移动。
 - **减仓触发**：{reduce_trigger_zh}满足时向仓位区间下限移动。
 - **其余情况**：仓位保持在区间内，不追未经确认的突破。
@@ -2754,7 +3069,7 @@ Output the report content directly, no extra commentary.
 
 ### 七、数据边界
 - 仓位区间和触发条件均来自上方固定规则，不采用大模型生成的支撑位、压力位或目标价。
-- 盘面信号仅由涨跌家数、指数涨跌幅和涨跌停数据确定性计算，不构成交易指令。
+- 盘面信号由宽度、指数、成交额环比、权重/成长一致性和涨跌停结构确定性计算，不构成交易指令。
 - 建议仅供参考，不构成投资建议。
 
 ---
@@ -2930,6 +3245,18 @@ Market conditions can change quickly. The data above is for reference only and d
             posture, exposure = "防守", "0%-20%"
 
         dimensions = self._build_us_market_light_scores(overview).get("dimensions") or {}
+        context = overview.us_market_context or {}
+        source_rows = context.get("sources") or []
+        source_text = "；".join(
+            f"{item.get('name', '未标注')}（{item.get('scope', '未标注')}，"
+            f"数据日 {item.get('as_of', '-')}）"
+            for item in source_rows
+            if isinstance(item, dict)
+        ) or "未标注"
+        fetched_at = str(
+            context.get("fetched_at")
+            or datetime.now().astimezone().isoformat(timespec="seconds")
+        )
         score_formula = (
             f"参与度 {int((dimensions.get('participation') or {}).get('score', 50))}×30% + "
             f"指数 {int((dimensions.get('index') or {}).get('score', 50))}×25% + "
@@ -2946,6 +3273,9 @@ Market conditions can change quickly. The data above is for reference only and d
 ### 一、数据校验
 - 核心指数、ETF参与度、行业轮动、SPY量比与2年/10年美债均已通过。
 - 指数和ETF交易日：{overview.date}
+- 指数与 SPY/QQQ/IWM 涨跌幅交叉校验：通过
+- 数据源：{source_text}
+- 抓取时间：{fetched_at}
 - 评分公式：{score_formula}
 
 ### 二、指数结构
@@ -2972,7 +3302,7 @@ Market conditions can change quickly. The data above is for reference only and d
 - 建议仅供参考，不构成投资建议。
 
 ---
-*校验时间: {datetime.now().strftime('%H:%M')}*
+*校验时间: {datetime.now().astimezone().isoformat(timespec='seconds')}*
 """
     
     def _run_daily_review_parts(self) -> MarketLightReviewResult:

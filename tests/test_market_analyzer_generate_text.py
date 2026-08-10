@@ -3025,10 +3025,10 @@ Sector text.
 
         result = ma._inject_data_into_review(review, overview)
 
-        assert "- **Market Signal**: 66/100 (constructive, risk-on)" in result
+        assert "- **Market Signal**: 59/100 (constructive, balanced)" in result
         assert "- **Breadth**: Advancers 3200 / Decliners 1800 / Flat 100;" in result
         assert "Turnover 14567 (CNY 100m)" in result
-        assert "| Index | Last | Change % | Open | High | Low | Amplitude | Turnover (CNY 100m) |" in result
+        assert "| Index | Close | Prior close | Change % | Turnover (CNY 100m) |" in result
         assert "#### Leading Industry Sectors" in result
         assert "| 1 | AI算力 | +3.25% |" in result
         assert "#### Lagging Industry Sectors" in result
@@ -3082,7 +3082,7 @@ Sector text.
         result = ma._inject_data_into_review(review, overview, news)
 
         assert "盘面信号" in result
-        assert "66/100（偏暖，可进攻）" in result
+        assert "59/100（偏暖，需观察）" in result
         assert "绿灯（可进攻）" not in result
         assert "大盘红绿灯" not in result
         assert "green（可进攻）" not in result
@@ -3090,16 +3090,18 @@ Sector text.
         signal_line = next(line for line in result.splitlines() if "**盘面信号**" in line)
         drivers_line = next(line for line in result.splitlines() if "**信号依据**" in line)
         assert signal_line.startswith("- ")
-        assert "66/100" in signal_line
+        assert "59/100" in signal_line
         assert "█" not in result
         assert "░" not in result
         assert "盘面温度" not in drivers_line
         assert "操作建议" in result
         assert "盘面温度" not in result
         assert "| 上涨/下跌/平盘 | 3200 / 1800 / 100 |" in result
-        assert "| 指数 | 最新 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 成交额(亿) |" in result
-        assert "| 上证指数 | 3300.00 | 🟢 +0.36% | 3288.00 | 3312.00 | 3276.00 | 1.10% | 1450 |" in result
-        assert "#### 行业板块领涨 Top 5" in result
+        assert "| 指数 | 收盘 | 昨收 | 涨跌幅 | 成交额(亿) |" in result
+        assert "| 上证指数 | 3300.00 | N/A | 🟢 +0.36% | 1450 |" in result
+        assert "**日内 OHLC 校验**" in result
+        assert "开 3288.00｜高 3312.00｜低 3276.00｜振幅 1.10%" in result
+        assert "#### 申万一级行业领涨 Top 5" in result
         assert "| 1 | AI算力 | +3.25% |" in result
         assert "#### 近三日市场线索" not in result
         assert "AI算力板块走强" not in result
@@ -3124,9 +3126,9 @@ Sector text.
         result = ma._inject_data_into_review(review, overview)
 
         assert "### 三、板块主线" in result
-        assert "#### 行业板块领涨 Top 5" in result
+        assert "#### 申万一级行业领涨 Top 5" in result
         assert "| 1 | AI算力 | +3.25% |" in result
-        assert "#### 行业板块领跌 Top 5" in result
+        assert "#### 申万一级行业领跌 Top 5" in result
         assert "| 1 | 煤炭 | -1.12% |" in result
 
     def test_market_review_payload_sections_skip_top_report_title(self):
@@ -3264,7 +3266,7 @@ Sector text.
         assert snapshot["score"] < 40
         assert snapshot["region"] == "cn"
         assert snapshot["trade_date"] == "2026-03-06"
-        assert snapshot["data_quality"] == "ok"
+        assert snapshot["data_quality"] == "partial"
         assert snapshot["dimensions"]["breadth"]["available"] is True
         assert snapshot["dimensions"]["index"]["available"] is True
         assert snapshot["dimensions"]["limit"]["available"] is True
@@ -3461,17 +3463,54 @@ Sector text.
                     name="上证指数",
                     current=3828.47,
                     change_pct=0.40,
+                    prev_close=3813.22,
+                    open=3802.00,
                     high=3845.77,
                     low=3782.48,
                     amount=1_087_400_000_000.0,
+                    previous_amount=1_160_000_000_000.0,
+                    trade_date="2026-07-29",
+                    previous_trade_date="2026-07-28",
+                    source="Eastmoney via AkShare (daily)",
                 ),
                 MarketIndex(
                     code="sz399001",
                     name="深证成指",
                     current=13658.44,
                     change_pct=1.10,
+                    prev_close=13509.83,
+                    open=13520.00,
+                    high=13680.00,
+                    low=13490.00,
                     amount=1_209_200_000_000.0,
+                    previous_amount=1_290_000_000_000.0,
+                    trade_date="2026-07-29",
+                    previous_trade_date="2026-07-28",
+                    source="Eastmoney via AkShare (daily)",
                 ),
+                *[
+                    MarketIndex(
+                        code=code,
+                        name=name,
+                        current=price,
+                        change_pct=0.75,
+                        prev_close=price / 1.0075,
+                        open=price - 5,
+                        high=price + 10,
+                        low=price - 10,
+                        amount=100_000_000_000.0,
+                        previous_amount=90_000_000_000.0,
+                        trade_date="2026-07-29",
+                        previous_trade_date="2026-07-28",
+                        source="Eastmoney via AkShare (daily)",
+                    )
+                    for code, name, price in (
+                        ("sz399006", "创业板指", 3000.0),
+                        ("sh000688", "科创50", 1100.0),
+                        ("sh000016", "上证50", 2800.0),
+                        ("sh000300", "沪深300", 4500.0),
+                    )
+                ],
             ],
             up_count=4252,
             down_count=1215,
@@ -3479,7 +3518,18 @@ Sector text.
             limit_up_count=83,
             limit_down_count=13,
             total_amount=23110.0,
-            top_sectors=[{"name": "其他金融业", "change_pct": 4.96}],
+            previous_total_amount=24500.0,
+            turnover_change=-1390.0,
+            turnover_change_pct=-5.6735,
+            turnover_trade_date="2026-07-28",
+            market_stats_source="AkshareFetcher",
+            market_stats_trade_date="2026-07-29",
+            top_sectors=[{
+                "name": "非银金融",
+                "change_pct": 4.96,
+                "classification": "SW1",
+                "source": "申万宏源研究·申万一级行业",
+            }],
         )
 
         result = ma.generate_market_review(
@@ -3499,14 +3549,18 @@ Sector text.
         assert "上涨占比（不含平盘）：77.8%" in result
         assert "主要指数平均涨跌幅：+0.75%" in result
         assert "两市成交额：23110 亿元" in result
-        assert "| 1 | 其他金融业 | +4.96% |" in result
+        assert "| 1 | 非银金融 | +4.96% |" in result
         assert "收盘数据发布（交易所 / 2026-07-29）" in result
-        assert "不作“放量”或“缩量”判断" in result
+        assert "较 2026-07-28缩量 1390 亿（-5.67%）" in result
         assert "### 六、次日量化计划" in result
-        assert "模型组合仓位区间 40%-60%" in result
-        assert "上证指数 30分钟级别收于 3845.77 点上方" in result
+        assert "模型组合仓位区间" in result
+        assert "上证指数 30分钟级别站稳 3828.47 点上方" in result
+        assert "实时上涨占比不低于60%" in result
+        assert "预估两市成交额不低于前一交易日" in result
         assert "上证指数 30分钟级别收于 3782.48 点下方" in result
-        assert "市场宽度 77 × 45% + 指数强弱 59 × 35%" in result
+        assert "市场宽度 77 × 30% + 指数强弱 59 × 25%" in result
+        assert "量价配合" in result
+        assert "权重/成长一致性" in result
         assert "未突破万亿" not in result
         assert "30%-40%" not in result
         assert "3900点支撑" not in result
@@ -3574,6 +3628,12 @@ Sector text.
                 limit_up_count=12,
                 limit_down_count=4,
                 total_amount=12345.0,
+                previous_total_amount=13000.0,
+                turnover_change=-655.0,
+                turnover_change_pct=-5.0385,
+                turnover_trade_date="2026-03-17",
+                market_stats_trade_date="2026-03-18",
+                market_stats_source="AkshareFetcher",
             ),
             [],
             "A股复盘报告",
@@ -3585,6 +3645,11 @@ Sector text.
         assert payload["breadth"]["down_count"] == 900
         assert payload["breadth"]["limit_up_count"] == 12
         assert payload["breadth"]["total_amount"] == 12345.0
+        assert payload["breadth"]["previous_total_amount"] == 13000.0
+        assert payload["breadth"]["turnover_change_pct"] == -5.0385
+        assert payload["breadth"]["previous_trade_date"] == "2026-03-17"
+        assert payload["breadth"]["market_stats_trade_date"] == "2026-03-18"
+        assert payload["breadth"]["source"] == "AkshareFetcher"
 
     def test_market_review_includes_concept_rankings_in_prompt_payload_and_tables(self):
         from src.market_analyzer import MarketIndex, MarketOverview
@@ -3664,9 +3729,9 @@ Sector text.
 
         result = ma._build_indices_block(overview)
 
-        assert "| 上证指数 | 3200.00 | 🔴 +0.68% |" in result
-        assert "| 深证成指 | 9800.00 | 🟢 -0.42% |" in result
-        assert "| 创业板指 | 2100.00 | ⚪ +0.00% |" in result
+        assert "| 上证指数 | 3200.00 | N/A | 🔴 +0.68% |" in result
+        assert "| 深证成指 | 9800.00 | N/A | 🟢 -0.42% |" in result
+        assert "| 创业板指 | 2100.00 | N/A | ⚪ +0.00% |" in result
 
     def test_indices_block_keeps_green_up_default_color_scheme(self):
         from src.market_analyzer import MarketOverview, MarketIndex
@@ -3682,8 +3747,138 @@ Sector text.
 
         result = ma._build_indices_block(overview)
 
-        assert "| 上证指数 | 3200.00 | 🟢 +0.68% |" in result
-        assert "| 深证成指 | 9800.00 | 🔴 -0.42% |" in result
+        assert "| 上证指数 | 3200.00 | N/A | 🟢 +0.68% |" in result
+        assert "| 深证成指 | 9800.00 | N/A | 🔴 -0.42% |" in result
+
+    def test_index_quote_recomputes_change_from_current_and_previous_close(self):
+        """供应商错误返回 0% 时，报告边界必须用现价/昨收复算。"""
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        ma.data_manager = MagicMock()
+        ma.data_manager.get_main_indices.return_value = [
+            {
+                "code": "399006",
+                "name": "创业板指",
+                "current": 3570.0,
+                "prev_close": 3500.0,
+                "change": 0.0,
+                "change_pct": 0.0,
+                "open": 3520.0,
+                "high": 3580.0,
+                "low": 3490.0,
+                "volume": 100.0,
+                "amount": 200.0,
+                "amplitude": 2.57,
+                "trade_date": "2026-08-10",
+            }
+        ]
+
+        indices = ma._get_main_indices()
+
+        assert len(indices) == 1
+        assert indices[0].change == pytest.approx(70.0)
+        assert indices[0].change_pct == pytest.approx(2.0)
+        assert indices[0].to_dict()["prev_close"] == 3500.0
+
+    def test_cn_turnover_uses_primary_exchange_indices_and_prior_session(self):
+        """两市额必须用上证综指+深证成指的同日成交额，不混入其他子集指数。"""
+
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        overview = MarketOverview(
+            date="2026-08-10",
+            total_amount=25382.0,
+            indices=[
+                MarketIndex(
+                    code="sh000001",
+                    name="上证指数",
+                    current=3966.59,
+                    amount=1_166_900_000_000.0,
+                    previous_amount=1_240_000_000_000.0,
+                    previous_trade_date="2026-08-07",
+                ),
+                MarketIndex(
+                    code="sz399001",
+                    name="深证成指",
+                    current=14316.96,
+                    amount=1_356_200_000_000.0,
+                    previous_amount=1_427_000_000_000.0,
+                    previous_trade_date="2026-08-07",
+                ),
+                MarketIndex(
+                    code="sh000300",
+                    name="沪深300",
+                    current=4702.02,
+                    amount=500_000_000_000.0,
+                    previous_amount=480_000_000_000.0,
+                    previous_trade_date="2026-08-07",
+                ),
+            ],
+        )
+
+        ma._recover_cn_total_amount_from_indices(overview)
+
+        assert overview.total_amount == pytest.approx(25231.0)
+        assert overview.previous_total_amount == pytest.approx(26670.0)
+        assert overview.turnover_change == pytest.approx(-1439.0)
+        assert overview.turnover_change_pct == pytest.approx(-5.3956)
+        assert overview.turnover_trade_date == "2026-08-07"
+
+    def test_cn_quality_rejects_mixed_session_breadth_and_non_sw1_sectors(self):
+        """盘中宽度不得与上一完整交易日指数混合，非申万分类不得冒充 SW1。"""
+
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        indices = [
+            MarketIndex(
+                code=code,
+                name=name,
+                current=price,
+                prev_close=price - 1,
+                open=price - 2,
+                high=price + 2,
+                low=price - 3,
+                amount=100_000_000_000.0,
+                previous_amount=110_000_000_000.0,
+                trade_date="2026-08-07",
+                previous_trade_date="2026-08-06",
+            )
+            for code, name, price in (
+                ("sh000001", "上证指数", 3900.0),
+                ("sz399001", "深证成指", 14000.0),
+                ("sz399006", "创业板指", 3500.0),
+                ("sh000688", "科创50", 1700.0),
+                ("sh000016", "上证50", 2900.0),
+                ("sh000300", "沪深300", 4600.0),
+            )
+        ]
+        overview = MarketOverview(
+            date="2026-08-07",
+            indices=indices,
+            indices_attempted=True,
+            market_stats_attempted=True,
+            market_stats_available=True,
+            market_stats_trade_date="2026-08-10",
+            up_count=3000,
+            down_count=2000,
+            total_amount=25000.0,
+            previous_total_amount=26000.0,
+            turnover_trade_date="2026-08-06",
+            top_sectors=[{
+                "name": "研究和试验发展",
+                "change_pct": 5.6,
+                "classification": "national_economy",
+            }],
+        )
+
+        quality = ma._assess_market_data_quality(overview)
+
+        assert quality["core_data_ready"] is False
+        assert quality["market_stats_date_aligned"] is False
+        assert "market_breadth_trade_date" in quality["missing_core_fields"]
+        assert "sw1_sector_rankings" in quality["missing_core_fields"]
 
     def test_no_private_attribute_access_in_market_analyzer_source(self):
         """Static guard: market_analyzer.py must not access private analyzer attrs."""

@@ -29,7 +29,7 @@ import os
 import random
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 
 import pandas as pd
@@ -1685,7 +1685,11 @@ class AkshareFetcher(BaseFetcher):
 
     def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
         """
-        获取主要指数实时行情 (新浪接口)，仅支持 A 股
+        获取主要指数行情，仅支持 A 股。
+
+        优先使用东财已完成日线，因为它同时提供昨收、当日/
+        前日成交额和交易日，能够完成收盘复盘所需的算术与
+        放量/缩量交叉校验。新浪实时接口仅作备用。
         """
         if region != "cn":
             return None
@@ -1700,6 +1704,110 @@ class AkshareFetcher(BaseFetcher):
             'sh000016': '上证50',
             'sh000300': '沪深300',
         }
+
+        # 收盘报告只消费最新已完成交易日；盘中手动运行
+        # 会自动回退到上一完整交易日，不把盘中快照写成收盘。
+        try:
+            from src.core.trading_calendar import get_effective_trading_date
+
+            cutoff = get_effective_trading_date("cn")
+        except Exception:
+            cutoff = datetime.now().date()
+
+        daily_by_code: Dict[str, Dict[str, Any]] = {}
+        start_date = (cutoff - timedelta(days=14)).strftime("%Y%m%d")
+        end_date = cutoff.strftime("%Y%m%d")
+        # 按单指数隔离异常，并对仅失败的代码自动补抓一轮。
+        # 旧实现中任意一次 RemoteDisconnected 会丢弃前面已成功
+        # 的全部指数，继而丢失前日成交额。
+        for attempt in range(2):
+            for code, name in indices_map.items():
+                if code in daily_by_code:
+                    continue
+                try:
+                    self._set_random_user_agent()
+                    self._enforce_rate_limit()
+                    frame = ak.stock_zh_index_daily_em(
+                        symbol=code,
+                        start_date=start_date,
+                        end_date=end_date,
+                    )
+                    if frame is None or frame.empty:
+                        continue
+                    frame = frame.copy()
+                    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+                    for column in (
+                        "open", "close", "high", "low", "volume", "amount"
+                    ):
+                        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+                    frame = frame.dropna(
+                        subset=["date", "close", "amount"]
+                    ).sort_values("date")
+                    if len(frame) < 2:
+                        continue
+                    latest = frame.iloc[-1]
+                    previous = frame.iloc[-2]
+                    current = float(latest["close"])
+                    prev_close = float(previous["close"])
+                    high = float(latest["high"])
+                    low = float(latest["low"])
+                    daily_by_code[code] = {
+                        "code": code,
+                        "name": name,
+                        "current": current,
+                        "change": current - prev_close,
+                        "change_pct": (
+                            (current - prev_close) / prev_close * 100.0
+                            if prev_close > 0 else 0.0
+                        ),
+                        "open": float(latest["open"]),
+                        "high": high,
+                        "low": low,
+                        "prev_close": prev_close,
+                        "volume": float(latest["volume"]),
+                        "amount": float(latest["amount"]),
+                        "previous_amount": float(previous["amount"]),
+                        "amplitude": (
+                            (high - low) / prev_close * 100.0
+                            if prev_close > 0 else 0.0
+                        ),
+                        "trade_date": pd.Timestamp(latest["date"]).date().isoformat(),
+                        "previous_trade_date": pd.Timestamp(previous["date"]).date().isoformat(),
+                        "source": "Eastmoney via AkShare (daily)",
+                    }
+                except Exception as exc:
+                    logger.warning(
+                        "[Akshare] 东财指数日线失败 code=%s attempt=%s: %s",
+                        code,
+                        attempt + 1,
+                        exc,
+                    )
+            if len(daily_by_code) == len(indices_map):
+                logger.info("[Akshare] 东财已完成日线获取 6 个主要指数成功")
+                return [daily_by_code[code] for code in indices_map]
+            if attempt == 0:
+                time.sleep(0.4)
+
+        logger.warning(
+            "[Akshare] 东财指数日线不完整: %s/%s，尝试同日新浪备用",
+            len(daily_by_code),
+            len(indices_map),
+        )
+
+        # 盘中新浪是当日部分快照，而 cutoff 是上一完整
+        # 交易日；两者绝不能混合。这种情况保留日线部分
+        # 结果让上层换源/重试，不伪造收盘。
+        try:
+            from src.core.trading_calendar import MarketPhase, infer_market_phase
+
+            if infer_market_phase("cn") in {
+                MarketPhase.INTRADAY,
+                MarketPhase.LUNCH_BREAK,
+                MarketPhase.CLOSING_AUCTION,
+            }:
+                return [daily_by_code[code] for code in indices_map if code in daily_by_code]
+        except Exception:
+            return [daily_by_code[code] for code in indices_map if code in daily_by_code]
 
         try:
             self._set_random_user_agent()
@@ -1729,7 +1837,7 @@ class AkshareFetcher(BaseFetcher):
                         if prev_close > 0:
                             amplitude = (high - low) / prev_close * 100
 
-                        results.append({
+                        fallback_row = {
                             'code': code,
                             'name': name,
                             'current': current,
@@ -1742,7 +1850,22 @@ class AkshareFetcher(BaseFetcher):
                             'volume': safe_float(row.get('成交量', 0)),
                             'amount': safe_float(row.get('成交额', 0)),
                             'amplitude': amplitude,
-                        })
+                            'trade_date': cutoff.isoformat(),
+                            'source': 'Sina via AkShare (realtime)',
+                        }
+                        daily_row = daily_by_code.get(code) or {}
+                        if daily_row:
+                            fallback_row['previous_amount'] = daily_row.get(
+                                'previous_amount', 0.0
+                            )
+                            fallback_row['previous_trade_date'] = daily_row.get(
+                                'previous_trade_date', ''
+                            )
+                            fallback_row['source'] = (
+                                'Sina via AkShare (close) + '
+                                'Eastmoney via AkShare (prior turnover)'
+                            )
+                        results.append(fallback_row)
             return results
 
         except Exception as e:
@@ -1937,6 +2060,43 @@ class AkshareFetcher(BaseFetcher):
                 for _, row in bottom.iterrows()
             ]
             return top_sectors, bottom_sectors
+
+        # 收盘复盘优先使用申万官方发布的一级行业指数。
+        # 涨跌幅由最新价/昨收盘复算，不混用 GB/T 4754 国民
+        # 经济行业或东财自定义板块。
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            sw_df = ak.index_realtime_sw(symbol="一级行业")
+            required = {"指数名称", "昨收盘", "最新价"}
+            if sw_df is not None and not sw_df.empty and required.issubset(sw_df.columns):
+                sw_df = sw_df.copy()
+                sw_df["昨收盘"] = pd.to_numeric(sw_df["昨收盘"], errors="coerce")
+                sw_df["最新价"] = pd.to_numeric(sw_df["最新价"], errors="coerce")
+                sw_df = sw_df.dropna(subset=["指数名称", "昨收盘", "最新价"])
+                sw_df = sw_df[sw_df["昨收盘"] > 0]
+                sw_df["_change_pct"] = (
+                    sw_df["最新价"] / sw_df["昨收盘"] - 1.0
+                ) * 100.0
+                sw_df = sw_df.dropna(subset=["_change_pct"])
+
+                def sw_rows(frame: pd.DataFrame) -> List[Dict[str, Any]]:
+                    return [
+                        {
+                            "name": str(row["指数名称"]),
+                            "change_pct": float(row["_change_pct"]),
+                            "classification": "SW1",
+                            "source": "申万宏源研究·申万一级行业",
+                        }
+                        for _, row in frame.iterrows()
+                    ]
+
+                return (
+                    sw_rows(sw_df.nlargest(n, "_change_pct")),
+                    sw_rows(sw_df.nsmallest(n, "_change_pct")),
+                )
+        except Exception as exc:
+            logger.warning("[Akshare] 申万一级行业行情失败: %s", exc)
         
         # 优先东财接口
         try:
@@ -1948,7 +2108,10 @@ class AkshareFetcher(BaseFetcher):
             if df is not None and not df.empty:
                 change_col = '涨跌幅'
                 name = '板块名称'
-                return _get_rank_top_n(df, change_col, name, n)
+                top, bottom = _get_rank_top_n(df, change_col, name, n)
+                for item in top + bottom:
+                    item.update({"classification": "eastmoney", "source": "东方财富行业板块"})
+                return top, bottom
             
         except Exception as e:
             logger.warning(f"[Akshare] 东财接口获取行业板块排行失败: {e}，尝试新浪接口")
@@ -1964,7 +2127,10 @@ class AkshareFetcher(BaseFetcher):
                 return None
             change_col = '涨跌幅'
             name = '板块'
-            return _get_rank_top_n(df, change_col, name, n)
+            top, bottom = _get_rank_top_n(df, change_col, name, n)
+            for item in top + bottom:
+                item.update({"classification": "sina", "source": "新浪行业板块"})
+            return top, bottom
         
         except Exception as e:
             logger.error(f"[Akshare] 新浪接口获取板块排行也失败: {e}")

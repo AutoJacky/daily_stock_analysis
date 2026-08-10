@@ -8,12 +8,65 @@ from unittest.mock import patch
 import pandas as pd
 
 from data_provider.tencent_fetcher import TencentFetcher, _to_tencent_symbol
+from src.core.trading_calendar import MarketPhase
 
 
 def test_tencent_symbol_conversion_supports_a_share_markets() -> None:
     assert _to_tencent_symbol("600519") == "sh600519"
     assert _to_tencent_symbol("000001") == "sz000001"
     assert _to_tencent_symbol("920748") == "bj920748"
+
+
+def test_tencent_fetcher_parses_six_index_close_quotes_in_one_request() -> None:
+    symbols = {
+        "sh000001": "上证指数",
+        "sz399001": "深证成指",
+        "sz399006": "创业板指",
+        "sh000688": "科创50",
+        "sh000016": "上证50",
+        "sh000300": "沪深300",
+    }
+    lines = []
+    for symbol, name in symbols.items():
+        fields = [""] * 38
+        fields[1] = name
+        fields[3] = "101.0"
+        fields[4] = "100.0"
+        fields[5] = "100.5"
+        fields[6] = "1200"
+        fields[30] = "20260810150000"
+        fields[33] = "102.0"
+        fields[34] = "99.0"
+        fields[35] = "101.0/1200/12000000000"
+        lines.append(f'v_{symbol}="{"~".join(fields)}";')
+
+    class FakeResponse:
+        encoding = None
+        text = "\n".join(lines)
+
+        def raise_for_status(self) -> None:
+            return None
+
+    with patch(
+        "data_provider.tencent_fetcher.requests.get",
+        return_value=FakeResponse(),
+    ) as request, patch(
+        "src.core.trading_calendar.infer_market_phase",
+        return_value=MarketPhase.POSTMARKET,
+    ), patch(
+        "src.core.trading_calendar.get_effective_trading_date",
+        return_value=pd.Timestamp("2026-08-10").date(),
+    ):
+        rows = TencentFetcher().get_main_indices("cn")
+
+    assert rows is not None
+    assert len(rows) == 6
+    assert {row["code"] for row in rows} == set(symbols)
+    assert all(row["prev_close"] == 100.0 for row in rows)
+    assert all(row["amount"] == 12_000_000_000.0 for row in rows)
+    assert all(row["trade_date"] == "2026-08-10" for row in rows)
+    assert all(row["source"] == "Tencent Finance (close quote)" for row in rows)
+    assert request.call_args.kwargs["params"]["q"] == ",".join(symbols)
 
 
 def test_tencent_fetcher_parses_qfq_daily_response() -> None:

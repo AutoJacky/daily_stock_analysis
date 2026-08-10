@@ -1210,6 +1210,7 @@ class TickFlowFetcher(BaseFetcher):
                         "name": name,
                         "change_pct": round(sum(changes) / len(changes), 4),
                         "source": "tickflow_sw1",
+                        "classification": "SW1",
                         "constituent_count": len(changes),
                     }
                 )

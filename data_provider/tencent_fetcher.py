@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import requests
@@ -30,6 +31,7 @@ class TencentFetcher(BaseFetcher):
     allow_empty_daily_data = True
 
     _KLINE_ENDPOINT = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    _QUOTE_ENDPOINT = "https://qt.gtimg.cn/q"
     _HTTP_TIMEOUT_SECONDS = 8
 
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -95,6 +97,104 @@ class TencentFetcher(BaseFetcher):
             normalized["pct_chg"] = normalized["close"].pct_change().fillna(0.0) * 100
         normalized = normalized[["date", "open", "high", "low", "close", "volume", "amount", "pct_chg"]]
         return normalized
+
+    def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
+        """Fetch a same-session six-index close snapshot in one request."""
+        if region != "cn":
+            return None
+
+        try:
+            from src.core.trading_calendar import (
+                MarketPhase,
+                get_effective_trading_date,
+                infer_market_phase,
+            )
+
+            if infer_market_phase("cn") in {
+                MarketPhase.INTRADAY,
+                MarketPhase.LUNCH_BREAK,
+                MarketPhase.CLOSING_AUCTION,
+            }:
+                return None
+            cutoff = get_effective_trading_date("cn")
+        except Exception:
+            return None
+
+        names = {
+            "sh000001": "上证指数",
+            "sz399001": "深证成指",
+            "sz399006": "创业板指",
+            "sh000688": "科创50",
+            "sh000016": "上证50",
+            "sh000300": "沪深300",
+        }
+        try:
+            response = requests.get(
+                self._QUOTE_ENDPOINT,
+                params={"q": ",".join(names)},
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "https://gu.qq.com/",
+                },
+                timeout=self._HTTP_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            response.encoding = "gbk"
+            payload = response.text
+        except requests.RequestException as exc:
+            logger.warning("TencentFetcher index quote request failed: %s", exc)
+            return None
+
+        rows: Dict[str, Dict[str, Any]] = {}
+        for match in re.finditer(r'v_([a-z0-9]+)="([^"]*)"', payload, re.I):
+            symbol = match.group(1).lower()
+            if symbol not in names:
+                continue
+            fields = match.group(2).split("~")
+            if len(fields) < 36:
+                continue
+            try:
+                current = float(fields[3])
+                prev_close = float(fields[4])
+                open_price = float(fields[5])
+                high = float(fields[33])
+                low = float(fields[34])
+                volume = float(fields[6])
+                quote_date = datetime.strptime(fields[30][:8], "%Y%m%d").date()
+                amount_parts = fields[35].split("/")
+                amount = float(amount_parts[2]) if len(amount_parts) >= 3 else 0.0
+            except (TypeError, ValueError, IndexError):
+                continue
+            if (
+                quote_date != cutoff
+                or min(current, prev_close, open_price, high, low, amount) <= 0
+            ):
+                continue
+            rows[symbol] = {
+                "code": symbol,
+                "name": names[symbol],
+                "current": current,
+                "change": current - prev_close,
+                "change_pct": (current - prev_close) / prev_close * 100.0,
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "prev_close": prev_close,
+                "volume": volume,
+                "amount": amount,
+                "amplitude": (high - low) / prev_close * 100.0,
+                "trade_date": quote_date.isoformat(),
+                "source": "Tencent Finance (close quote)",
+            }
+
+        if len(rows) != len(names):
+            logger.warning(
+                "TencentFetcher incomplete main-index quote: %s/%s",
+                len(rows),
+                len(names),
+            )
+            return None
+        return [rows[symbol] for symbol in names]
 
 
 def _to_tencent_symbol(stock_code: str) -> str:

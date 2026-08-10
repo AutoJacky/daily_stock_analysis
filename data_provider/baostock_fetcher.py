@@ -17,8 +17,8 @@ BaostockFetcher - 备用数据源 2 (Priority 3)
 import logging
 import re
 from contextlib import contextmanager
-from datetime import datetime
-from typing import Optional, Generator
+from datetime import datetime, timedelta
+from typing import Any, Dict, Generator, List, Optional
 
 import pandas as pd
 from tenacity import (
@@ -286,6 +286,125 @@ class BaostockFetcher(BaseFetcher):
         df = df[existing_cols]
         
         return df
+
+    def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
+        """Return six A-share indices from completed, unadjusted daily bars.
+
+        Besides OHLC and previous close, Baostock exposes historical turnover.
+        It therefore serves as an independent fallback when Eastmoney's
+        historical endpoint is temporarily blocked or disconnected.
+        """
+        if region != "cn":
+            return None
+
+        try:
+            from src.core.trading_calendar import get_effective_trading_date
+
+            cutoff = get_effective_trading_date("cn")
+        except Exception:
+            cutoff = datetime.now().date()
+
+        mapping = {
+            "sh000001": ("sh.000001", "上证指数"),
+            "sz399001": ("sz.399001", "深证成指"),
+            "sz399006": ("sz.399006", "创业板指"),
+            "sh000688": ("sh.000688", "科创50"),
+            "sh000016": ("sh.000016", "上证50"),
+            "sh000300": ("sh.000300", "沪深300"),
+        }
+        fields = (
+            "date,open,high,low,close,preclose,volume,amount,pctChg"
+        )
+        start_date = (cutoff - timedelta(days=14)).isoformat()
+        end_date = cutoff.isoformat()
+        results: List[Dict[str, Any]] = []
+
+        try:
+            with self._baostock_session() as bs:
+                for return_code, (bs_code, name) in mapping.items():
+                    rs = bs.query_history_k_data_plus(
+                        code=bs_code,
+                        fields=fields,
+                        start_date=start_date,
+                        end_date=end_date,
+                        frequency="d",
+                        adjustflag="3",
+                    )
+                    if rs.error_code != "0":
+                        logger.warning(
+                            "[Baostock] 指数日线查询失败 code=%s error=%s",
+                            return_code,
+                            rs.error_msg,
+                        )
+                        continue
+                    rows = []
+                    while rs.next():
+                        rows.append(rs.get_row_data())
+                    if len(rows) < 2:
+                        logger.warning(
+                            "[Baostock] 指数日线不足两日 code=%s rows=%s",
+                            return_code,
+                            len(rows),
+                        )
+                        continue
+                    frame = pd.DataFrame(rows, columns=rs.fields)
+                    for column in (
+                        "open", "high", "low", "close", "preclose",
+                        "volume", "amount", "pctChg",
+                    ):
+                        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+                    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+                    frame = frame.dropna(
+                        subset=["date", "open", "high", "low", "close", "amount"]
+                    ).sort_values("date")
+                    if len(frame) < 2:
+                        continue
+                    latest = frame.iloc[-1]
+                    previous = frame.iloc[-2]
+                    current = float(latest["close"])
+                    prev_close = float(latest["preclose"])
+                    if prev_close <= 0:
+                        prev_close = float(previous["close"])
+                    high = float(latest["high"])
+                    low = float(latest["low"])
+                    results.append({
+                        "code": return_code,
+                        "name": name,
+                        "current": current,
+                        "change": current - prev_close,
+                        "change_pct": (
+                            (current - prev_close) / prev_close * 100.0
+                            if prev_close > 0 else 0.0
+                        ),
+                        "open": float(latest["open"]),
+                        "high": high,
+                        "low": low,
+                        "prev_close": prev_close,
+                        "volume": float(latest["volume"]),
+                        "amount": float(latest["amount"]),
+                        "previous_amount": float(previous["amount"]),
+                        "amplitude": (
+                            (high - low) / prev_close * 100.0
+                            if prev_close > 0 else 0.0
+                        ),
+                        "trade_date": pd.Timestamp(latest["date"]).date().isoformat(),
+                        "previous_trade_date": pd.Timestamp(previous["date"]).date().isoformat(),
+                        "source": "Baostock (daily)",
+                    })
+        except Exception as exc:
+            logger.warning("[Baostock] 获取主要指数失败: %s", exc)
+            return None
+
+        if len(results) != len(mapping):
+            logger.warning(
+                "[Baostock] 主要指数日线不完整: %s/%s",
+                len(results),
+                len(mapping),
+            )
+            # Return verified partial rows so DataFetcherManager can merge the
+            # unsupported STAR 50 row from another same-session source.
+            return results or None
+        return results
 
     def get_stock_name(self, stock_code: str) -> Optional[str]:
         """

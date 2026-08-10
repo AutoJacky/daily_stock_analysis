@@ -16,6 +16,7 @@
 
 import logging
 import random
+import re
 import time
 from threading import BoundedSemaphore, RLock, Thread
 from abc import ABC, abstractmethod
@@ -2529,29 +2530,178 @@ class DataFetcherManager:
 
     def get_main_indices(self, region: str = "cn") -> List[Dict[str, Any]]:
         """获取主要指数实时行情（自动切换数据源）"""
+        def with_source(data: List[Dict[str, Any]], provider: str) -> List[Dict[str, Any]]:
+            fetched_at = datetime.now().astimezone().isoformat(timespec="seconds")
+            normalized: List[Dict[str, Any]] = []
+            for raw in data:
+                item = dict(raw)
+                item.setdefault("source", provider)
+                item.setdefault("fetched_at", fetched_at)
+                normalized.append(item)
+            return normalized
+
+        def cn_index_key(item: Dict[str, Any]) -> str:
+            code = str(item.get("code") or "").upper()
+            digits = re.sub(r"\D", "", code)
+            return digits[-6:] if len(digits) >= 6 else code
+
+        def cn_row_rank(item: Dict[str, Any]) -> Tuple[int, int, int]:
+            def positive(field: str) -> bool:
+                try:
+                    return float(item.get(field) or 0) > 0
+                except (TypeError, ValueError):
+                    return False
+
+            return (
+                int(positive("previous_amount") and bool(item.get("previous_trade_date"))),
+                int("daily" in str(item.get("source") or "").lower()),
+                sum(
+                    int(positive(field))
+                    for field in (
+                        "current", "prev_close", "open", "high", "low", "amount"
+                    )
+                ),
+            )
+
+        def merge_cn_rows(
+            existing: Optional[List[Dict[str, Any]]],
+            incoming: List[Dict[str, Any]],
+        ) -> List[Dict[str, Any]]:
+            merged: Dict[str, Dict[str, Any]] = {
+                cn_index_key(item): dict(item) for item in (existing or [])
+            }
+            for item in incoming:
+                key = cn_index_key(item)
+                current = merged.get(key)
+                if current is None or cn_row_rank(item) > cn_row_rank(current):
+                    merged[key] = dict(item)
+                    continue
+                # Even when the current quote is more complete, preserve prior
+                # turnover evidence discovered by a later historical source.
+                for field in ("previous_amount", "previous_trade_date"):
+                    if not current.get(field) and item.get(field):
+                        current[field] = item[field]
+            return list(merged.values())
+
+        def cn_close_contract_ready(data: List[Dict[str, Any]]) -> bool:
+            # Minimal test doubles and third-party extensions keep their legacy
+            # behavior.  Production quote rows expose ``current`` and must meet
+            # the strict close-review contract: six indices plus current/prior
+            # exchange turnover for auditable volume comparison.
+            if not data or not any("current" in item for item in data):
+                return True
+            required_codes = {
+                "000001", "399001", "399006", "000688", "000016", "000300"
+            }
+            if not required_codes.issubset({cn_index_key(item) for item in data}):
+                return False
+            try:
+                current_rows_ready = all(
+                    float(item.get("current") or 0) > 0
+                    and float(item.get("prev_close") or 0) > 0
+                    and float(item.get("open") or 0) > 0
+                    and float(item.get("high") or 0) > 0
+                    and float(item.get("low") or 0) > 0
+                    and float(item.get("amount") or 0) > 0
+                    and bool(item.get("trade_date"))
+                    for item in data
+                )
+                primary_rows = []
+                for item in data:
+                    code = str(item.get("code") or "").upper()
+                    name = str(item.get("name") or "")
+                    digits = re.sub(r"\D", "", code)
+                    if (
+                        digits.endswith("000001")
+                        or digits.endswith("399001")
+                        or name in {"上证指数", "上证综指", "深证成指"}
+                    ):
+                        primary_rows.append(item)
+                trade_dates = {
+                    str(item.get("trade_date") or "") for item in data
+                    if item.get("trade_date")
+                }
+                prior_dates = {
+                    str(item.get("previous_trade_date") or "")
+                    for item in primary_rows
+                    if item.get("previous_trade_date")
+                }
+                prior_turnover_ready = len(primary_rows) == 2 and all(
+                    float(item.get("previous_amount") or 0) > 0
+                    and bool(item.get("previous_trade_date"))
+                    for item in primary_rows
+                )
+                return (
+                    current_rows_ready
+                    and prior_turnover_ready
+                    and len(trade_dates) == 1
+                    and len(prior_dates) == 1
+                )
+            except (TypeError, ValueError):
+                return False
+
+        cn_fallback: Optional[List[Dict[str, Any]]] = None
+
         if region == "cn":
             tickflow_fetcher = self._get_tickflow_fetcher()
             if tickflow_fetcher is not None:
                 try:
                     data = tickflow_fetcher.get_main_indices(region=region)
                     if data:
-                        logger.info("[TickFlowFetcher] 获取指数行情成功")
-                        return data
+                        sourced = with_source(data, "TickFlowFetcher")
+                        if cn_close_contract_ready(sourced):
+                            logger.info("[TickFlowFetcher] 获取指数收盘合约成功")
+                            return sourced
+                        cn_fallback = merge_cn_rows(cn_fallback, sourced)
+                        logger.info(
+                            "[TickFlowFetcher] 指数快照缺前日成交额，"
+                            "继续查找可比收盘源"
+                        )
                 except Exception as e:
                     logger.warning(f"[TickFlowFetcher] 获取指数行情失败: {e}")
 
-        for fetcher in self._fetchers:
+        fetchers = list(self._fetchers)
+        if region == "cn":
+            # A completed close contract is fastest and most resilient when a
+            # one-request Tencent snapshot is paired with Baostock's prior-day
+            # turnover.  Slow scrape-based sources remain later fallbacks.
+            cn_index_order = {
+                "TencentFetcher": 0,
+                "BaostockFetcher": 1,
+                "AkshareFetcher": 2,
+            }
+            fetchers.sort(
+                key=lambda fetcher: (
+                    cn_index_order.get(fetcher.name, 3),
+                    fetcher.priority,
+                )
+            )
+
+        for fetcher in fetchers:
             if region == "cn" and fetcher.name == "TickFlowFetcher":
                 continue
             try:
                 data = fetcher.get_main_indices(region=region)
                 if data:
-                    logger.info(f"[{fetcher.name}] 获取指数行情成功")
-                    return data
+                    sourced = with_source(data, fetcher.name)
+                    if region != "cn":
+                        logger.info(f"[{fetcher.name}] 获取指数行情成功")
+                        return sourced
+                    cn_fallback = merge_cn_rows(cn_fallback, sourced)
+                    if cn_close_contract_ready(cn_fallback):
+                        logger.info(
+                            "[%s] 多源指数收盘合约已补齐",
+                            fetcher.name,
+                        )
+                        return cn_fallback
+                    logger.info(
+                        "[%s] 指数数据未满足收盘可比合约，继续换源",
+                        fetcher.name,
+                    )
             except Exception as e:
                 logger.warning(f"[{fetcher.name}] 获取指数行情失败: {e}")
                 continue
-        return []
+        return cn_fallback or []
 
     def get_us_market_context(self) -> Dict[str, Any]:
         """Get US-market internals from a provider that exposes the full contract.
@@ -2572,6 +2722,8 @@ class DataFetcherManager:
                 data = self._call_fetcher_method(fetcher, "get_us_market_context")
                 if data:
                     logger.info("[%s] 获取美股市场内部指标成功", fetcher.name)
+                    data = dict(data)
+                    data.setdefault("_source", fetcher.name)
                     return data
             except Exception as exc:
                 logger.warning("[%s] 获取美股市场内部指标失败: %s", fetcher.name, exc)
@@ -2612,6 +2764,8 @@ class DataFetcherManager:
                         purpose,
                         elapsed,
                     )
+                    data = dict(data)
+                    data.setdefault("_source", "TickFlowFetcher")
                     return data
                 logger.info(
                     "[MarketStats] component=market_stats action=provider_empty "
@@ -2641,6 +2795,8 @@ class DataFetcherManager:
                         fetcher.name,
                         elapsed,
                     )
+                    data = dict(data)
+                    data.setdefault("_source", fetcher.name)
                     return data
                 logger.info(
                     "[MarketStats] component=market_stats action=provider_empty "
@@ -3805,6 +3961,45 @@ class DataFetcherManager:
         if top or bottom:
             return top, bottom
         logger.warning(f"[板块排行] 所有数据源均失败，最终错误: {last_error}")
+        return [], []
+
+    def get_sw1_sector_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
+        """Return only verified Shenwan level-1 industry rankings.
+
+        General board APIs mix Eastmoney, THS and national-economy taxonomies.
+        A close-review report must not silently present those as a mainstream
+        sell-side industry classification.
+        """
+
+        preferred = sorted(
+            self._get_fetchers_snapshot(),
+            key=lambda fetcher: (
+                0 if fetcher.name == "TickFlowFetcher"
+                else 1 if fetcher.name == "AkshareFetcher"
+                else 2,
+                fetcher.priority,
+            ),
+        )
+        for fetcher in preferred:
+            method = getattr(fetcher, "get_sector_rankings", None)
+            if not callable(method):
+                continue
+            try:
+                data = method(n)
+            except Exception as exc:
+                logger.warning("[%s] 申万一级行业排名失败: %s", fetcher.name, exc)
+                continue
+            if not data or not data[0] or not data[1]:
+                continue
+            combined = list(data[0]) + list(data[1])
+            if combined and all(
+                str(item.get("classification") or "").upper() == "SW1"
+                for item in combined
+                if isinstance(item, dict)
+            ):
+                logger.info("[%s] 申万一级行业排名通过分类校验", fetcher.name)
+                return list(data[0]), list(data[1])
+            logger.info("[%s] 行业分类非申万一级，已忽略", fetcher.name)
         return [], []
 
     @staticmethod

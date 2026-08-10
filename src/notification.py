@@ -1941,13 +1941,26 @@ class NotificationService(
                 else {}
             )
 
-        def _limitations(result: AnalysisResult) -> List[str]:
+        def _reported_limitations(result: AnalysisResult) -> List[str]:
             values = _phase_decision(result).get("data_limitations")
             return [
                 str(item).strip()
                 for item in (values if isinstance(values, list) else [])
                 if str(item).strip()
             ]
+
+        def _limitations(result: AnalysisResult) -> List[str]:
+            """Return only delivery-blocking evidence gaps.
+
+            Model-authored ``data_limitations`` can include optional or
+            market-inapplicable enrichments, such as A-share-style main-fund
+            flow for US/JP stocks.  The deterministic delivery contract is the
+            authority for whether core quote, technical, financial, event and
+            action evidence is actually incomplete.
+            """
+
+            ready, issues = self.evaluate_single_stock_push_readiness(result)
+            return [] if ready else issues
 
         def _risk_rank(result: AnalysisResult) -> tuple:
             decision = str(getattr(result, "decision_type", "") or "").lower()
@@ -2112,6 +2125,8 @@ class NotificationService(
             signal_text, signal_emoji, _ = self._get_signal_level(result)
             stock_name = self._get_display_name(result, report_language)
             confidence = getattr(result, "confidence_level", None) or "N/A"
+            evidence_issues = _limitations(result)
+            evidence_status = "核心证据通过" if not evidence_issues else "核心证据未通过"
             score = int(getattr(result, "sentiment_score", 0) or 0)
             phase_decision = _phase_decision(result)
             immediate_action = _short(
@@ -2136,7 +2151,7 @@ class NotificationService(
                     "",
                     (
                         f"**一句话结论：** {signal_text}｜综合分 {score}/100"
-                        f"｜证据置信度 {confidence}"
+                        f"｜{evidence_status}｜模型置信度 {confidence}"
                     ),
                     f"**模型动作：** {_action_guidance(result)}",
                     f"**你现在怎么做：** {immediate_action}",
@@ -2165,17 +2180,23 @@ class NotificationService(
             risk = str(getattr(result, "risk_warning", None) or "").strip()
             if risk:
                 lines.append(f"**风险或结论失效：** {_short(risk, 105)}")
-            limitations = _limitations(result)
-            if limitations:
-                data_gap = "；".join(limitations[:2])
+            if evidence_issues:
+                data_gap = "；".join(evidence_issues[:2])
                 lines.append(
-                    f"**数据可信度：** 有缺口——{_short(data_gap, 95)}"
+                    f"**核心证据：** 未通过——{_short(data_gap, 95)}"
                 )
             else:
                 lines.append(
-                    "**数据可信度：** 本轮未记录结构化缺口；"
-                    "仍需核对交易所公告与最新价格"
+                    "**核心证据：** 已通过正式推送门槛（行情、技术、"
+                    "财报、事件与行动卡）"
                 )
+                reported_limitations = _reported_limitations(result)
+                if reported_limitations:
+                    lines.append(
+                        "**增强项说明：** "
+                        f"{_short('；'.join(reported_limitations[:2]), 95)}；"
+                        "不用于升级买入结论"
+                    )
             verified_event = _latest_verified_event(result)
             if verified_event:
                 lines.append(f"**公司动态：** {verified_event}")
@@ -2220,12 +2241,17 @@ class NotificationService(
                 signal_text, signal_emoji, _ = self._get_signal_level(result)
                 stock_name = self._get_display_name(result, report_language)
                 confidence = getattr(result, "confidence_level", None) or "N/A"
-                gap_marker = "｜⚠️ 数据不足" if _limitations(result) else ""
+                evidence_issues = _limitations(result)
+                evidence_label = (
+                    "核心证据 通过"
+                    if not evidence_issues
+                    else "⚠️ 核心证据未通过"
+                )
                 lines.append(
                     f"- {signal_emoji} **{stock_name}（{result.code}）**｜"
                     f"{signal_text}｜"
                     f"{int(getattr(result, 'sentiment_score', 0) or 0)}分"
-                    f"｜证据 {confidence}{gap_marker}"
+                    f"｜{evidence_label}｜模型置信度 {confidence}"
                 )
 
         lines.extend(
@@ -2234,7 +2260,8 @@ class NotificationService(
                 "## 🧭 不懂术语就看这里",
                 "",
                 "- **综合分：** 只用于同批股票排序，不是上涨概率。",
-                "- **证据置信度：** 表示数据和证据是否充分，不是预测胜率。",
+                "- **核心证据：** 通过表示行情、技术、财报、事件和行动卡均通过硬校验。",
+                "- **模型置信度：** 是结论信心层级，不是预测胜率。",
                 "- **机会观察：** 可以重点跟踪，不等于立刻买入。",
                 "- **等待确认：** 条件没有满足前不行动，避免追涨杀跌。",
                 "- **优先防守：** 先检查仓位和风险，不代表股价一定下跌。",

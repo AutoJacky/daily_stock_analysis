@@ -78,16 +78,44 @@ class TestFetchYfTickerData(unittest.TestCase):
 
         self.assertIsNone(result)
 
-    def test_single_row_history_uses_same_as_prev(self):
-        """仅一行数据时 prev_close 等于 current，change_pct 为 0"""
+    def test_single_row_history_is_rejected_instead_of_fabricating_flat_change(self):
+        """仅一行数据时无法证明昨收，不得伪造 0% 涨跌幅。"""
         mock_hist = _make_mock_hist(close=5000.0, prev_close=5000.0)
         mock_hist = mock_hist.iloc[[-1]]
         mock_yf = _make_mock_yf(mock_hist)
 
         result = self.fetcher._fetch_yf_ticker_data(mock_yf, '^GSPC', '标普500指数', 'SPX')
 
+        self.assertIsNone(result)
+        mock_yf.Ticker.return_value.history.assert_called_once_with(period='5d')
+
+    @patch(
+        'data_provider.yfinance_fetcher.YfinanceFetcher._completed_index_session',
+        return_value='2026-08-07',
+    )
+    def test_future_or_partial_session_is_removed_before_return_calculation(self, _cutoff):
+        """北京时间美股未收盘时，不得把 8/10 盘中行当成收盘。"""
+        frame = pd.DataFrame(
+            {
+                'Close': [100.0, 101.0, 120.0],
+                'Open': [99.0, 100.0, 110.0],
+                'High': [101.0, 102.0, 121.0],
+                'Low': [98.0, 99.0, 109.0],
+                'Volume': [1_000_000.0, 1_200_000.0, 100_000.0],
+            },
+            index=pd.DatetimeIndex(['2026-08-06', '2026-08-07', '2026-08-10']),
+        )
+        mock_yf = _make_mock_yf(frame)
+
+        result = self.fetcher._fetch_yf_ticker_data(
+            mock_yf, '^GSPC', '标普500指数', 'SPX'
+        )
+
         self.assertIsNotNone(result)
-        self.assertEqual(result['change_pct'], 0.0)
+        self.assertEqual(result['trade_date'], '2026-08-07')
+        self.assertEqual(result['previous_trade_date'], '2026-08-06')
+        self.assertEqual(result['current'], 101.0)
+        self.assertAlmostEqual(result['change_pct'], 1.0)
 
 
 class TestGetUsMainIndices(unittest.TestCase):

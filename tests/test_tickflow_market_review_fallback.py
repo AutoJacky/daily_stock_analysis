@@ -63,7 +63,9 @@ class TestTickFlowMarketReviewFallback(unittest.TestCase):
 
         data = DataFetcherManager.get_main_indices(manager, region="cn")
 
-        self.assertEqual(data, [{"code": "000001"}])
+        self.assertEqual(data[0]["code"], "000001")
+        self.assertEqual(data[0]["source"], "TickFlowFetcher")
+        self.assertTrue(data[0]["fetched_at"])
         self.assertEqual(fallback.index_calls, 0)
 
     def test_manager_falls_back_when_tickflow_indices_fail(self):
@@ -76,7 +78,9 @@ class TestTickFlowMarketReviewFallback(unittest.TestCase):
 
         data = DataFetcherManager.get_main_indices(manager, region="cn")
 
-        self.assertEqual(data, [{"code": "fallback"}])
+        self.assertEqual(data[0]["code"], "fallback")
+        self.assertEqual(data[0]["source"], "AkshareFetcher")
+        self.assertTrue(data[0]["fetched_at"])
         self.assertEqual(fallback.index_calls, 1)
 
     def test_manager_falls_back_when_tickflow_indices_missing(self):
@@ -89,7 +93,9 @@ class TestTickFlowMarketReviewFallback(unittest.TestCase):
 
         data = DataFetcherManager.get_main_indices(manager, region="cn")
 
-        self.assertEqual(data, [{"code": "fallback"}])
+        self.assertEqual(data[0]["code"], "fallback")
+        self.assertEqual(data[0]["source"], "AkshareFetcher")
+        self.assertTrue(data[0]["fetched_at"])
         self.assertEqual(fallback.index_calls, 1)
 
     def test_manager_skips_tickflow_for_non_cn_indices(self):
@@ -102,8 +108,66 @@ class TestTickFlowMarketReviewFallback(unittest.TestCase):
 
         data = DataFetcherManager.get_main_indices(manager, region="us")
 
-        self.assertEqual(data, [{"code": "^GSPC"}])
+        self.assertEqual(data[0]["code"], "^GSPC")
+        self.assertEqual(data[0]["source"], "YfinanceFetcher")
+        self.assertTrue(data[0]["fetched_at"])
         self.assertEqual(fallback.index_calls, 1)
+
+    def test_manager_merges_same_session_sources_to_restore_prior_turnover(self):
+        codes = [
+            ("sh000001", "上证指数"),
+            ("sz399001", "深证成指"),
+            ("sz399006", "创业板指"),
+            ("sh000688", "科创50"),
+            ("sh000016", "上证50"),
+            ("sh000300", "沪深300"),
+        ]
+
+        def row(code, name, *, with_prior=False):
+            item = {
+                "code": code,
+                "name": name,
+                "current": 101.0,
+                "prev_close": 100.0,
+                "open": 100.0,
+                "high": 102.0,
+                "low": 99.0,
+                "amount": 12_000_000_000.0,
+                "trade_date": "2026-08-10",
+            }
+            if with_prior:
+                item.update({
+                    "previous_amount": 10_000_000_000.0,
+                    "previous_trade_date": "2026-08-07",
+                })
+            return item
+
+        realtime = _DummyFetcher(
+            "AkshareFetcher",
+            indices=[row(code, name) for code, name in codes],
+        )
+        historical = _DummyFetcher(
+            "BaostockFetcher",
+            # Baostock does not expose STAR 50; the manager must retain that
+            # same-session quote from the realtime provider.
+            indices=[
+                row(code, name, with_prior=True)
+                for code, name in codes
+                if code != "sh000688"
+            ],
+        )
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        manager._fetchers = [realtime, historical]
+        manager._get_tickflow_fetcher = lambda: None
+
+        data = DataFetcherManager.get_main_indices(manager, region="cn")
+
+        assert len(data) == 6
+        by_code = {item["code"]: item for item in data}
+        assert by_code["sh000001"]["previous_amount"] == 10_000_000_000.0
+        assert by_code["sz399001"]["previous_amount"] == 10_000_000_000.0
+        assert by_code["sh000688"]["source"] == "AkshareFetcher"
+        assert by_code["sh000001"]["source"] == "BaostockFetcher"
 
     def test_manager_falls_back_when_tickflow_market_stats_fails(self):
         manager = DataFetcherManager.__new__(DataFetcherManager)

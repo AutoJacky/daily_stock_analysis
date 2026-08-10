@@ -107,6 +107,30 @@ class YfinanceFetcher(BaseFetcher):
         pass
 
     @staticmethod
+    def _completed_index_session(return_code: str) -> str:
+        """Resolve the latest fully closed session for an index family."""
+
+        code = str(return_code or "").upper()
+        if code in {"SPX", "IXIC", "NDX", "DJI", "RUT", "VIX"}:
+            market = "us"
+        elif code in {"HSI", "HSTECH", "HSCEI"}:
+            market = "hk"
+        elif code in {"N225", "TOPX"}:
+            market = "jp"
+        elif code in {"KOSPI", "KOSDAQ"}:
+            market = "kr"
+        elif code in {"TWII", "TWOII"}:
+            market = "tw"
+        else:
+            market = "cn"
+        try:
+            from src.core.trading_calendar import get_effective_trading_date
+
+            return get_effective_trading_date(market).isoformat()
+        except Exception:
+            return ""
+
+    @staticmethod
     def _is_jp_kr_suffix_stock(stock_code: str) -> bool:
         """Return True for supported JP/KR suffix-only Yahoo symbols."""
         return is_suffix_market_symbol(stock_code, "jp") or is_suffix_market_symbol(stock_code, "kr")
@@ -335,12 +359,30 @@ class YfinanceFetcher(BaseFetcher):
             行情字典，失败时返回 None
         """
         ticker = yf.Ticker(yf_code)
-        # 取近两日数据以计算涨跌幅
-        hist = ticker.history(period='2d')
+        # Yahoo 的 ``2d`` 窗口在部分亚洲指数的盘中/收盘后查询中
+        # 会只返回当天一行。旧逻辑因此把当天收盘同时当作昨收，
+        # 让多个实际涨跌的指数显示为 0.00%。扩大窗口并强制要求
+        # 两个可用交易日；仍不足时宁可让上层换源，不伪造平盘。
+        hist = ticker.history(period='5d')
         if hist.empty:
             return None
+        hist = hist.dropna(subset=['Close']).sort_index()
+        completed_session = self._completed_index_session(return_code)
+        if completed_session:
+            index_dates = pd.to_datetime(hist.index, errors="coerce")
+            session_dates = pd.Series(index_dates, index=hist.index).dt.date
+            cutoff_date = datetime.fromisoformat(completed_session).date()
+            hist = hist.loc[session_dates <= cutoff_date]
+        if len(hist) < 2:
+            logger.warning(
+                "[Yfinance] %s 指数历史仅 %d 个有效交易日，"
+                "无法校验昨收与涨跌幅",
+                yf_code,
+                len(hist),
+            )
+            return None
         today_row = hist.iloc[-1]
-        prev_row = hist.iloc[-2] if len(hist) > 1 else today_row
+        prev_row = hist.iloc[-2]
         price = float(today_row['Close'])
         prev_close = float(prev_row['Close'])
         change = price - prev_close
@@ -363,6 +405,8 @@ class YfinanceFetcher(BaseFetcher):
             'amount': 0.0,  # Yahoo Finance 不提供准确成交额
             'amplitude': amplitude,
             'trade_date': pd.Timestamp(hist.index[-1]).date().isoformat(),
+            'previous_trade_date': pd.Timestamp(hist.index[-2]).date().isoformat(),
+            'source': 'Yahoo Finance/yfinance',
         }
 
     def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
@@ -458,13 +502,24 @@ class YfinanceFetcher(BaseFetcher):
         return pd.DataFrame()
 
     @staticmethod
-    def _build_us_price_metric(frame: pd.DataFrame, *, symbol: str, name: str) -> Optional[Dict[str, Any]]:
+    def _build_us_price_metric(
+        frame: pd.DataFrame,
+        *,
+        symbol: str,
+        name: str,
+        completed_through: str = "",
+    ) -> Optional[Dict[str, Any]]:
         """Normalize a verified daily ETF series into the US context contract."""
         if frame is None or frame.empty or "Close" not in frame.columns:
             return None
         normalized = frame.copy()
         normalized["Close"] = pd.to_numeric(normalized["Close"], errors="coerce")
         normalized = normalized.dropna(subset=["Close"])
+        if completed_through:
+            cutoff = datetime.fromisoformat(completed_through).date()
+            index_dates = pd.to_datetime(normalized.index, errors="coerce")
+            dates = pd.Series(index_dates, index=normalized.index).dt.date
+            normalized = normalized.loc[dates <= cutoff]
         if len(normalized) < 2:
             return None
         latest = normalized.iloc[-1]
@@ -477,13 +532,16 @@ class YfinanceFetcher(BaseFetcher):
         volume = None
         average_volume_20 = None
         volume_ratio_20d = None
+        volume_observations = 0
         if "Volume" in normalized.columns:
             volumes = pd.to_numeric(normalized["Volume"], errors="coerce")
             latest_volume = volumes.iloc[-1]
-            history_volume = volumes.iloc[:-1].dropna().tail(20)
-            if pd.notna(latest_volume) and float(latest_volume) >= 0:
+            history_volume = volumes.iloc[:-1].dropna()
+            history_volume = history_volume[history_volume > 0].tail(20)
+            volume_observations = len(history_volume)
+            if pd.notna(latest_volume) and float(latest_volume) > 0:
                 volume = float(latest_volume)
-            if not history_volume.empty and float(history_volume.mean()) > 0:
+            if len(history_volume) >= 15 and float(history_volume.mean()) > 0:
                 average_volume_20 = float(history_volume.mean())
                 if volume is not None:
                     volume_ratio_20d = volume / average_volume_20
@@ -497,15 +555,22 @@ class YfinanceFetcher(BaseFetcher):
             "volume": volume,
             "average_volume_20": average_volume_20,
             "volume_ratio_20d": volume_ratio_20d,
+            "volume_observations": volume_observations,
             "as_of": pd.Timestamp(normalized.index[-1]).date().isoformat(),
             "source": "Yahoo Finance/yfinance",
         }
 
     def _fetch_us_etf_metrics(self, yf) -> Dict[str, Dict[str, Any]]:
+        try:
+            from src.core.trading_calendar import get_effective_trading_date
+
+            completed_through = get_effective_trading_date("us").isoformat()
+        except Exception:
+            completed_through = ""
         symbols = list(self._US_MARKET_PROXIES) + list(self._US_SECTOR_ETFS)
         raw = yf.download(
             symbols,
-            period="1mo",
+            period="3mo",
             interval="1d",
             group_by="ticker",
             auto_adjust=False,
@@ -519,13 +584,18 @@ class YfinanceFetcher(BaseFetcher):
                 self._extract_yf_symbol_frame(raw, symbol),
                 symbol=symbol,
                 name=names[symbol],
+                completed_through=completed_through,
             )
             if metric:
                 metrics[symbol] = metric
         return metrics
 
     @classmethod
-    def _fetch_fred_metric(cls, series_id: str) -> Optional[Dict[str, Any]]:
+    def _fetch_fred_metric(
+        cls,
+        series_id: str,
+        as_of: str = "",
+    ) -> Optional[Dict[str, Any]]:
         """Fetch recent official FRED observations without requiring an API key."""
         name, unit = cls._US_FRED_SERIES[series_id]
         start_date = (datetime.utcnow() - timedelta(days=21)).date().isoformat()
@@ -556,6 +626,8 @@ class YfinanceFetcher(BaseFetcher):
             if not observation_date:
                 continue
             rows.append((observation_date, value))
+        if as_of:
+            rows = [row for row in rows if row[0] <= as_of]
         if len(rows) < 2:
             return None
         latest_date, latest_value = rows[-1]
@@ -708,7 +780,7 @@ class YfinanceFetcher(BaseFetcher):
         macro: Dict[str, Dict[str, Any]] = {}
         for series_id in self._US_FRED_SERIES:
             try:
-                metric = self._fetch_fred_metric(series_id)
+                metric = self._fetch_fred_metric(series_id, latest_proxy_date)
             except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
                 logger.warning("[FRED] 获取 %s 失败: %s", series_id, exc)
                 metric = None
@@ -783,7 +855,8 @@ class YfinanceFetcher(BaseFetcher):
         liquidity_ok = bool(
             spy
             and spy.get("volume_ratio_20d") is not None
-            and float(spy["volume_ratio_20d"]) > 0
+            and int(spy.get("volume_observations") or 0) >= 15
+            and 0.25 <= float(spy["volume_ratio_20d"]) <= 4.0
         )
         missing = []
         if not proxy_ok:
@@ -821,6 +894,7 @@ class YfinanceFetcher(BaseFetcher):
 
         return {
             "as_of": latest_proxy_date,
+            "fetched_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "proxies": aligned_proxies,
             "participation": participation,
             "sector_rankings": {
