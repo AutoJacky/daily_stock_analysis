@@ -54,4 +54,6 @@ def test_daily_analysis_enables_objective_backtest_and_agent_calibration() -> No
     assert "BACKTEST_MIN_AGE_DAYS" in env
     assert "AGENT_MEMORY_ENABLED" in env
     assert "ADAPTIVE_LEARNING_ENABLED" in env
+    assert "ADAPTIVE_LEARNING_NOTIFY_ENABLED" in env
+    assert "'false'" in str(env["ADAPTIVE_LEARNING_NOTIFY_ENABLED"])
     assert "DSA_TRIGGER_SOURCE" in env

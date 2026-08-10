@@ -32,6 +32,7 @@ from src.analyzer import (
     GeminiAnalyzer,
     AnalysisResult,
     enforce_evidence_consistency,
+    enforce_position_advice_consistency,
     fill_price_position_if_needed,
     normalize_chip_structure_availability,
     populate_decision_action_fields,
@@ -864,6 +865,13 @@ class StockAnalysisPipeline:
                         "[daily_market_context_guardrail] Applied adjustments for %s: %s",
                         code,
                         market_context_adjustments,
+                    )
+                position_adjustments = enforce_position_advice_consistency(result)
+                if position_adjustments:
+                    logger.info(
+                        "[position_advice_guardrail] Applied adjustments for %s: %s",
+                        code,
+                        position_adjustments,
                     )
                 if isinstance(fundamental_context, dict):
                     result.fundamental_context = fundamental_context

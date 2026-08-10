@@ -866,6 +866,7 @@ class Config:
     agent_deep_research_timeout: int = 180  # Max seconds for /research command before returning timeout
     agent_memory_enabled: bool = False  # Enable memory & calibration system
     adaptive_learning_enabled: bool = False  # Persist daily model-governance snapshots
+    adaptive_learning_notify_enabled: bool = False  # Push calibration summary after reports
     agent_skill_autoweight: bool = True  # Auto-weight skills by backtest performance
     agent_skill_routing: str = "auto"  # Skill routing: 'auto' (regime-based) or 'manual'
     agent_context_compression_enabled: bool = False  # Compress visible chat history before Agent calls
@@ -1855,6 +1856,10 @@ class Config:
             agent_memory_enabled=os.getenv('AGENT_MEMORY_ENABLED', 'false').lower() == 'true',
             adaptive_learning_enabled=os.getenv(
                 'ADAPTIVE_LEARNING_ENABLED',
+                'false',
+            ).lower() == 'true',
+            adaptive_learning_notify_enabled=os.getenv(
+                'ADAPTIVE_LEARNING_NOTIFY_ENABLED',
                 'false',
             ).lower() == 'true',
             agent_skill_autoweight=(

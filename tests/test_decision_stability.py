@@ -7,6 +7,7 @@ from src.analyzer import (
     AnalysisResult,
     _capital_flow_bias,
     enforce_evidence_consistency,
+    enforce_position_advice_consistency,
     fill_price_position_if_needed,
     stabilize_decision_with_structure,
 )
@@ -540,3 +541,48 @@ def test_refines_hold_pullback_near_support_as_shakeout_watch() -> None:
     assert result.decision_type == "hold"
     assert result.operation_advice == "洗盘观察"
     assert "更适合按洗盘观察处理" in result.risk_warning
+
+
+def test_no_position_advice_cannot_issue_sell_instruction() -> None:
+    result = _result(
+        decision_type="sell",
+        operation_advice="减仓",
+        score=39,
+        current_price=1252.0,
+    )
+    result.dashboard["core_conclusion"]["position_advice"] = {
+        "no_position": "空仓者：建议立即卖出",
+        "has_position": "持仓者减仓至5%以下",
+    }
+    result.dashboard["battle_plan"] = {
+        "position_strategy": {"entry_plan": "空仓者立即清仓"}
+    }
+
+    adjustments = enforce_position_advice_consistency(result)
+
+    assert adjustments == ["no_position_exit_instruction_replaced"]
+    no_position = result.dashboard["core_conclusion"]["position_advice"]["no_position"]
+    assert no_position == "空仓者保持空仓，不追涨；等待风险信号解除后再评估。"
+    assert "卖出" not in no_position
+    assert "减仓" not in no_position
+    assert result.dashboard["battle_plan"]["position_strategy"]["entry_plan"] == no_position
+
+
+def test_valid_no_position_wait_instruction_is_preserved() -> None:
+    result = _result(
+        decision_type="hold",
+        operation_advice="观望",
+        score=50,
+        current_price=100.0,
+    )
+    result.dashboard["core_conclusion"]["position_advice"] = {
+        "no_position": "空仓者暂不介入，等待突破确认",
+        "has_position": "持仓者继续观察",
+    }
+
+    adjustments = enforce_position_advice_consistency(result)
+
+    assert adjustments == []
+    assert result.dashboard["core_conclusion"]["position_advice"]["no_position"] == (
+        "空仓者暂不介入，等待突破确认"
+    )

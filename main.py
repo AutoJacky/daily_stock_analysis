@@ -1371,6 +1371,7 @@ def run_full_analysis(
         learning_review = _run_auto_backtest(config)
         if (
             learning_review
+            and getattr(config, "adaptive_learning_notify_enabled", False)
             and not args.no_notify
             and pipeline.notifier.is_available()
         ):
@@ -1382,6 +1383,8 @@ def run_full_analysis(
                 logger.info("每日预测复核与校准摘要推送成功")
             else:
                 logger.warning("每日预测复核与校准摘要推送失败")
+        elif learning_review:
+            logger.info("每日预测复核与校准已完成；摘要推送已关闭，校准结果仍用于后续分析")
 
         return True
 

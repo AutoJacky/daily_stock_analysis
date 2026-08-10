@@ -1427,6 +1427,64 @@ def _set_decision_stability_unavailable(
     _sync_stability_dashboard_fields(result)
 
 
+def enforce_position_advice_consistency(result: "AnalysisResult") -> List[str]:
+    """Prevent impossible actions such as asking an empty account to sell."""
+    if not result or not isinstance(getattr(result, "dashboard", None), dict):
+        return []
+
+    dashboard = result.dashboard
+    core = dashboard.get("core_conclusion")
+    if not isinstance(core, dict):
+        return []
+    position_advice = core.get("position_advice")
+    if not isinstance(position_advice, dict):
+        return []
+
+    language = normalize_report_language(getattr(result, "report_language", "zh"))
+    no_position = str(position_advice.get("no_position") or "").strip()
+    lowered = no_position.lower()
+    exit_terms = {
+        "zh": ("卖出", "减仓", "清仓", "平仓", "止损", "止盈"),
+        "en": ("sell", "reduce", "trim", "exit", "liquidate", "stop loss", "take profit"),
+        "ko": ("매도", "비중 축소", "청산", "손절", "익절"),
+    }.get(language, ("sell", "reduce", "trim", "exit", "liquidate"))
+    if not no_position or not any(term in lowered for term in exit_terms):
+        return []
+
+    decision_type = infer_decision_type_from_advice(
+        getattr(result, "decision_type", ""),
+        default="hold",
+    )
+    if language == "zh":
+        replacement = (
+            "空仓者保持空仓，不追涨；等待风险信号解除后再评估。"
+            if decision_type == "sell"
+            else "空仓者暂不介入，等待价格与证据确认后再行动。"
+        )
+    elif language == "ko":
+        replacement = "미보유자는 현금을 유지하고 위험 신호가 해소된 후 재평가하세요."
+    else:
+        replacement = (
+            "Stay in cash and reassess only after the risk signal clears."
+            if decision_type == "sell"
+            else "Do not enter yet; wait for price and evidence confirmation."
+        )
+
+    position_advice["no_position"] = replacement
+    battle_plan = dashboard.get("battle_plan")
+    strategy = battle_plan.get("position_strategy") if isinstance(battle_plan, dict) else None
+    if isinstance(strategy, dict):
+        entry_plan = str(strategy.get("entry_plan") or "").lower()
+        if any(term in entry_plan for term in exit_terms):
+            strategy["entry_plan"] = replacement
+
+    logger.warning(
+        "[position_advice_guardrail] Replaced impossible no-position exit instruction: %s",
+        no_position,
+    )
+    return ["no_position_exit_instruction_replaced"]
+
+
 def _record_decision_score_calibration(
     result: "AnalysisResult",
     *,
