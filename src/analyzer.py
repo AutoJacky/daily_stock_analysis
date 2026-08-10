@@ -4910,6 +4910,8 @@ class GeminiAnalyzer:
         today = context.get('today', {}) or {}
         realtime = context.get('realtime', {}) or {}
         yesterday = context.get('yesterday', {}) or {}
+        quote_section_title, close_label = _phase_aware_quote_labels(context)
+        phase_context = context.get('market_phase_context') or {}
 
         prev_close = yesterday.get('close')
         close = today.get('close')
@@ -4936,6 +4938,10 @@ class GeminiAnalyzer:
         snapshot = {
             "date": context.get('date', '未知'),
             "currency": self._resolve_market_currency(context),
+            "quote_section_title": quote_section_title,
+            "close_label": close_label,
+            "market_phase": phase_context.get('phase'),
+            "is_partial_bar": bool(phase_context.get('is_partial_bar')),
             "close": self._format_price(close),
             "open": self._format_price(today.get('open')),
             "high": self._format_price(high),

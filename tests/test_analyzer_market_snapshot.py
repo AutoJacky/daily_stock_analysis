@@ -26,3 +26,32 @@ def test_market_snapshot_recomputes_change_pct_from_displayed_prices() -> None:
     assert snapshot["change_amount"] == "165.00"
     assert snapshot["currency"] == "HKD"
     assert snapshot["amount"] == "62.16 亿港元"
+
+
+def test_market_snapshot_marks_intraday_realtime_bar_as_partial() -> None:
+    analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+    snapshot = analyzer._build_market_snapshot(
+        {
+            "date": "2026-08-10",
+            "code": "AMD",
+            "today": {
+                "date": "2026-08-10",
+                "close": 478.52,
+                "open": 477.42,
+                "high": 483.36,
+                "low": 470.69,
+                "volume": 7427600,
+                "data_source": "realtime:yfinance",
+                "is_partial_bar": True,
+            },
+            "yesterday": {"close": 489.28},
+            "market_phase_context": {
+                "phase": "intraday",
+                "is_partial_bar": True,
+            },
+        }
+    )
+
+    assert snapshot["quote_section_title"] == "最新行情"
+    assert snapshot["close_label"] == "盘中估算价"
+    assert snapshot["is_partial_bar"] is True

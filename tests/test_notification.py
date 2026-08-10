@@ -1901,6 +1901,9 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             analysis_summary="等待确认",
             market_snapshot={
                 "currency": "HKD",
+                "quote_section_title": "最新行情",
+                "close_label": "盘中估算价",
+                "is_partial_bar": True,
                 "close": "1252.00",
                 "prev_close": "1087.00",
                 "open": "1120.00",
@@ -1920,6 +1923,9 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         self.assertIn("计价币种**：HKD（港元）", output)
         self.assertIn("62.16 亿港元", output)
+        self.assertIn("### 📈 最新行情", output)
+        self.assertIn("盘中估算价", output)
+        self.assertIn("盘中快照", output)
 
     @mock.patch("src.notification.get_config")
     def test_related_boards_drops_signal_columns_when_no_sector_data(
