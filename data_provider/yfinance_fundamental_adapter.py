@@ -222,6 +222,16 @@ class YfinanceFundamentalAdapter:
             revenue_latest = _latest_value(revenue_row)
             net_profit_latest = _latest_value(net_profit_row)
 
+        # Newly listed offshore companies can expose TTM figures in ``info``
+        # before Yahoo publishes a quarterly statement table.  Keep the date
+        # tied to Yahoo's explicit reporting timestamps instead of dropping a
+        # real financial payload merely because the table is not populated.
+        if report_date is None:
+            report_date = (
+                _epoch_to_date(info.get("mostRecentQuarter"))
+                or _epoch_to_date(info.get("lastFiscalYearEnd"))
+            )
+
         try:
             cashflow_df = ticker.quarterly_cashflow
         except Exception as exc:

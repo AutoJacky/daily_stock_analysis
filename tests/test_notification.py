@@ -807,6 +807,8 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("共看了 2 只股票：成功 0 只，失败 2 只", digest)
         self.assertIn("600519", digest)
         self.assertIn("000001", digest)
+        self.assertIn("timeout", digest)
+        self.assertIn("provider unavailable", digest)
 
     """报告生成与选路相关测试。"""
 
@@ -1018,6 +1020,53 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         ready, issues = service.evaluate_single_stock_push_readiness(result)
 
         self.assertTrue(ready)
+        self.assertEqual(issues, [])
+
+    @mock.patch("src.notification.get_config")
+    def test_single_stock_push_readiness_accepts_completed_empty_news_window(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config()
+        service = NotificationService()
+        result = AnalysisResult(
+            code="AMD",
+            name="Advanced Micro Devices",
+            sentiment_score=55,
+            trend_prediction="震荡",
+            operation_advice="观望",
+            analysis_summary="等待确认",
+            dashboard={
+                "core_conclusion": {
+                    "one_sentence": "等待价格与量能确认。",
+                    "position_advice": {
+                        "no_position": "暂不追高。",
+                        "has_position": "持有并控制风险。",
+                    },
+                },
+                "data_perspective": {
+                    "price_position": {"ma5": 210, "ma10": 208, "ma20": 205}
+                },
+                "intelligence": {
+                    "verified_events": [],
+                    "verification_status": "completed_no_events",
+                    "verification_sources": ["Nasdaq"],
+                },
+            },
+            market_snapshot={
+                "date": "2026-08-10", "close": 211, "prev_close": 209,
+                "open": 209.5, "high": 212, "low": 208, "volume": 50000000,
+            },
+        )
+        result.fundamental_context = {
+            "earnings": {"status": "ok", "data": {"financial_report": {
+                "report_date": "2026-06-30", "revenue": 100, "net_profit_parent": 20,
+            }}},
+            "growth": {"status": "ok", "data": {"revenue_yoy": 5.0}},
+        }
+
+        ready, issues = service.evaluate_single_stock_push_readiness(result)
+
+        self.assertTrue(ready, issues)
         self.assertEqual(issues, [])
 
     @mock.patch("src.notification.get_config")

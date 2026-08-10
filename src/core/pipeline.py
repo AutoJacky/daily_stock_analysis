@@ -597,6 +597,8 @@ class StockAnalysisPipeline:
             )
             news_result_count: Optional[int] = None
             verified_event_evidence: List[Dict[str, Any]] = list(persisted_event_evidence)
+            news_verification_completed = False
+            news_verification_sources: List[str] = []
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
             if self.search_service is not None and self.search_service.is_available:
                 logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
@@ -611,6 +613,23 @@ class StockAnalysisPipeline:
                 # 格式化情报报告
                 if intel_results:
                     news_context = self.search_service.format_intel_report(intel_results, stock_name)
+                    event_responses = [
+                        intel_results.get(dimension)
+                        for dimension in ("latest_news", "announcements", "risk_check")
+                    ]
+                    successful_event_responses = [
+                        response
+                        for response in event_responses
+                        if response is not None and response.success
+                    ]
+                    news_verification_completed = bool(successful_event_responses)
+                    news_verification_sources = list(
+                        dict.fromkeys(
+                            str(response.provider or "").strip()
+                            for response in successful_event_responses
+                            if str(response.provider or "").strip()
+                        )
+                    )
                     total_results = sum(
                         len(r.results) for r in intel_results.values() if r.success
                     )
@@ -820,6 +839,8 @@ class StockAnalysisPipeline:
                     fundamental_context,
                     news_result_count=news_result_count,
                     verified_event_evidence=verified_event_evidence,
+                    news_verification_completed=news_verification_completed,
+                    news_verification_sources=news_verification_sources,
                 )
                 adjustments = apply_phase_decision_guardrails(
                     result,
@@ -3217,6 +3238,7 @@ class StockAnalysisPipeline:
         repair_history: List[Dict[str, Any]] = []
         current_result = result
         current_issues = list(issues)
+        stalled_rounds = 0
         for attempt in range(1, max_attempts + 1):
             logger.warning(
                 "[%s] 正式推送证据不完整，启动自愈 %d/%d：%s",
@@ -3255,6 +3277,8 @@ class StockAnalysisPipeline:
 
             current_result = refreshed
             ready, next_issues = checker(current_result)
+            same_issues = set(next_issues) == set(current_issues)
+            stalled_rounds = stalled_rounds + 1 if same_issues else 0
             repair_history.append(
                 {
                     "attempt": attempt,
@@ -3262,6 +3286,7 @@ class StockAnalysisPipeline:
                     "actions": repair_actions,
                     "issues_after": list(next_issues),
                     "result": "repaired" if ready else "still_incomplete",
+                    "made_progress": not same_issues,
                 }
             )
             current_issues = list(next_issues)
@@ -3273,6 +3298,14 @@ class StockAnalysisPipeline:
                     success=True,
                     attempts=attempt,
                 )
+                break
+            if stalled_rounds >= 2:
+                logger.error(
+                    "[%s] 自愈连续两轮无新增证据，停止重复抓取并保留准确缺失原因：%s",
+                    code,
+                    "；".join(current_issues),
+                )
+                repair_history[-1]["result"] = "stalled_no_progress"
                 break
 
         current_result.report_self_heal = {
@@ -3308,11 +3341,10 @@ class StockAnalysisPipeline:
     ) -> Dict[str, Any]:
         """Perform an escalating repair plan, then let the caller regenerate.
 
-        The first pass only repairs the evidence blocks named by the readiness
-        contract.  Repeated failures expand to every mandatory block and, from
-        the third pass, reset transient provider health before trying the full
-        fallback chain again.  This keeps normal runs cheap while ensuring a
-        review finding produces concrete recovery work instead of prose only.
+        Only repair evidence blocks named by the readiness contract.  The old
+        second pass expanded an intelligence-only gap into daily bars, quotes,
+        fundamentals and capital flow, repeatedly refetching healthy data and
+        making a nine-stock US run take nineteen minutes.
         """
 
         components: set[str] = set()
@@ -3320,21 +3352,7 @@ class StockAnalysisPipeline:
             components.update(_PUSH_READINESS_REPAIR_COMPONENTS.get(issue, set()))
         if not components:
             components.add("decision")
-        repair_level = "targeted"
-        if attempt >= 2:
-            repair_level = "full_refetch"
-            components.update(
-                {
-                    "identity",
-                    "daily",
-                    "quote",
-                    "technical",
-                    "fundamental",
-                    "capital_flow",
-                    "intelligence",
-                    "decision",
-                }
-            )
+        repair_level = "targeted" if attempt == 1 else "targeted_retry"
 
         actions: Dict[str, Any] = {
             "components": sorted(components),
@@ -3348,7 +3366,9 @@ class StockAnalysisPipeline:
         }
         manager = getattr(self, "fetcher_manager", None)
 
-        if attempt >= 3:
+        if attempt >= 3 and components.intersection(
+            {"identity", "daily", "quote", "technical", "fundamental", "capital_flow"}
+        ):
             # Earlier calls have already exhausted the provider fallback chain.
             # Reset only transient health state; stock data caches are cleared
             # separately below and no credentials/configuration are modified.

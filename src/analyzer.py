@@ -1660,6 +1660,8 @@ def enforce_evidence_consistency(
     *,
     news_result_count: Optional[int] = None,
     verified_event_evidence: Optional[List[Dict[str, Any]]] = None,
+    news_verification_completed: Optional[bool] = None,
+    news_verification_sources: Optional[List[str]] = None,
 ) -> None:
     """Fail closed when event/fundamental evidence is missing.
 
@@ -1679,7 +1681,9 @@ def enforce_evidence_consistency(
         if isinstance(verified_event_evidence, list)
         else None
     )
-    news_missing = not verified_events if verified_events is not None else news_result_count == 0
+    has_verified_events = bool(verified_events)
+    verification_completed = bool(news_verification_completed)
+    news_missing = not has_verified_events and not verification_completed
 
     def _block_has_data(name: str) -> bool:
         if not isinstance(fundamental_context, dict):
@@ -1702,6 +1706,19 @@ def enforce_evidence_consistency(
         intelligence = {}
         dashboard["intelligence"] = intelligence
 
+    verification_sources = [
+        str(item).strip()
+        for item in (news_verification_sources or [])
+        if str(item).strip()
+    ]
+    if has_verified_events:
+        intelligence["verification_status"] = "completed_with_events"
+    elif verification_completed:
+        intelligence["verification_status"] = "completed_no_events"
+    else:
+        intelligence["verification_status"] = "failed"
+    intelligence["verification_sources"] = list(dict.fromkeys(verification_sources))
+
     limitations: List[str] = []
     if language == "zh":
         if news_missing:
@@ -1717,6 +1734,19 @@ def enforce_evidence_consistency(
             _apply_verified_event_evidence(intelligence, verified_events)
             result.news_summary = intelligence["latest_news"]
             result.market_sentiment = "仅列示可追溯事件事实，不把媒体语气或热度作为交易依据。"
+        elif verification_completed:
+            source_text = "、".join(intelligence["verification_sources"]) or "备用资讯源"
+            no_event_text = (
+                f"已完成{source_text}近期限时检索，本窗口未返回可核验事件；"
+                "这不等同于交易所或公司公告全量核验。"
+            )
+            intelligence["latest_news"] = no_event_text
+            intelligence["verified_events"] = []
+            intelligence["risk_alerts"] = ["操作前仍需核对交易所及公司官方披露。"]
+            intelligence["positive_catalysts"] = []
+            intelligence["sentiment_summary"] = "检索完成但无事件条目，不据此推断利好、利空或市场情绪"
+            result.news_summary = no_event_text
+            result.market_sentiment = "无新增可核验事件不等于无风险，消息情绪不作为独立交易依据。"
         if financial_missing:
             financial_limitation = "财报与业绩结构化数据缺失，无法判断盈利质量和估值分位。"
             intelligence["earnings_outlook"] = financial_limitation
@@ -1768,6 +1798,23 @@ def enforce_evidence_consistency(
             intelligence["latest_news"] = text
             intelligence["risk_alerts"] = [text]
             intelligence["positive_catalysts"] = []
+        elif verification_completed and not has_verified_events:
+            source_text = ", ".join(intelligence["verification_sources"]) or "fallback sources"
+            text = (
+                f"The time-bounded {source_text} search completed without a verifiable event; "
+                "this is not equivalent to a complete exchange or issuer filing check."
+            )
+            intelligence["latest_news"] = text
+            intelligence["verified_events"] = []
+            intelligence["risk_alerts"] = [
+                "Check exchange and issuer disclosures before acting."
+            ]
+            intelligence["positive_catalysts"] = []
+            intelligence["sentiment_summary"] = (
+                "No event result does not establish positive, negative, or neutral sentiment."
+            )
+            result.news_summary = text
+            result.market_sentiment = "News sentiment is not used as a standalone trading signal."
         if financial_missing:
             intelligence["earnings_outlook"] = (
                 "Structured financial and earnings data is unavailable; profitability and valuation percentile cannot be assessed."

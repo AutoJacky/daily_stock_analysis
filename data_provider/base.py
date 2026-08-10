@@ -2585,10 +2585,10 @@ class DataFetcherManager:
         provider_timeout = max(
             0.01,
             min(
-                60.0,
+                90.0,
                 float(
-                    getattr(config, "market_stats_provider_timeout_seconds", 12.0)
-                    or 12.0
+                    getattr(config, "market_stats_provider_timeout_seconds", 75.0)
+                    or 75.0
                 ),
             ),
         )

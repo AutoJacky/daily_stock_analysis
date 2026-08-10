@@ -2191,12 +2191,18 @@ class NotificationService(
                 ]
             )
             seen_failed = set()
-            for code, _reason in failed_items:
+            for code, reason in failed_items:
                 normalized_code = str(code or "").strip() or "未知代码"
                 if normalized_code in seen_failed:
                     continue
                 seen_failed.add(normalized_code)
-                lines.append(f"- 🔴 **{normalized_code}**｜数据或模型链路失败，等待下轮重试")
+                reason_text = _short(
+                    str(reason or "未记录具体失败原因").strip(),
+                    120,
+                )
+                lines.append(
+                    f"- 🔴 **{normalized_code}**｜自动补采后仍未通过：{reason_text}"
+                )
             lines.append("")
 
         lines.extend(["## 🧾 全部自选，一眼分组", ""])
@@ -2598,7 +2604,10 @@ class NotificationService(
             and str(event.get('url')).lower().startswith(('http://', 'https://'))
             for event in (events if isinstance(events, list) else [])
         )
-        if not has_verified_event:
+        verification_status = str(
+            intelligence.get('verification_status') or ''
+        ).strip().lower()
+        if not has_verified_event and verification_status != 'completed_no_events':
             issues.append("近期新闻/公告缺少日期、来源和可访问链接")
 
         core = (

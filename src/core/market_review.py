@@ -68,6 +68,7 @@ def _run_market_analyzer_with_self_heal(
     )
     enabled = bool(getattr(config, "push_report_self_heal_enabled", True))
     history = []
+    stalled_rounds = 0
 
     for attempt in range(1, max_attempts + 1):
         payload = (
@@ -133,6 +134,9 @@ def _run_market_analyzer_with_self_heal(
             else {}
         )
         actions["issues_after"] = list(next_quality.get("missing_core_fields") or [])
+        same_issues = set(actions["issues_after"]) == set(missing)
+        stalled_rounds = stalled_rounds + 1 if same_issues else 0
+        actions["made_progress"] = not same_issues
         actions["result"] = (
             "repaired"
             if next_quality.get("core_data_ready") is not False
@@ -140,6 +144,15 @@ def _run_market_analyzer_with_self_heal(
         )
         history.append(actions)
         review_result = refreshed
+        if stalled_rounds >= 2:
+            actions["result"] = "stalled_no_progress"
+            logger.error(
+                "[MarketReview] region=%s action=self_heal status=stalled "
+                "reason=two_identical_rounds missing=%s",
+                region,
+                ",".join(actions["issues_after"]),
+            )
+            break
 
     if history and isinstance(getattr(review_result, "structured_payload", None), dict):
         final_quality = review_result.structured_payload.get("data_quality") or {}

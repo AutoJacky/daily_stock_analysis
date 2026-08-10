@@ -2449,5 +2449,121 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         self.assertIn("摘要命中公司英文别名 Apple", reasons)
         self.assertNotIn("标题命中公司英文别名", reasons)
 
+def test_nasdaq_symbol_news_preserves_traceable_fields() -> None:
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "data": {
+            "rows": [
+                {
+                    "title": "AMD reports quarterly results",
+                    "created": "Aug 9, 2026",
+                    "publisher": "Reuters",
+                    "url": "/articles/amd-reports-quarterly-results",
+                    "description": "Revenue and guidance were disclosed.",
+                }
+            ]
+        }
+    }
+
+    with patch("src.search_service.requests.get", return_value=response):
+        actual = SearchService._search_nasdaq_symbol_news(
+            stock_code="AMD",
+            stock_name="AMD",
+            max_results=3,
+        )
+
+    assert actual.success is True
+    assert actual.provider == "Nasdaq"
+    assert actual.results[0].published_date == "Aug 9, 2026"
+    assert actual.results[0].source == "Reuters"
+    assert actual.results[0].url == "https://www.nasdaq.com/articles/amd-reports-quarterly-results"
+
+
+def test_yfinance_news_accepts_nested_schema() -> None:
+    ticker = MagicMock()
+    ticker.get_news.return_value = [
+        {
+            "content": {
+                "title": "Kioxia announces earnings",
+                "summary": "Quarterly earnings announcement.",
+                "pubDate": "2026-08-09T01:02:03Z",
+                "provider": {"displayName": "Business Wire"},
+                "canonicalUrl": {"url": "https://example.com/kioxia-earnings"},
+            }
+        }
+    ]
+
+    with patch("yfinance.Ticker", return_value=ticker):
+        actual = SearchService._search_yfinance_symbol_news(
+            stock_code="285A.T",
+            stock_name="铠侠控股",
+            max_results=3,
+        )
+
+    assert actual.success is True
+    assert actual.results[0].title == "Kioxia announces earnings"
+    assert actual.results[0].source == "Business Wire"
+    assert actual.results[0].published_date == "2026-08-09T01:02:03Z"
+
+
+def test_known_official_ir_news_parses_zhipu_card() -> None:
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.content = b"""
+        <html><body>
+          <a href="/en/news/200">
+            <h3>Z.ai publishes interim results</h3>
+            <p>2026/08/09</p>
+          </a>
+        </body></html>
+    """
+
+    with patch("src.search_service.requests.get", return_value=response):
+        actual = SearchService._search_known_official_ir_news(
+            stock_code="HK02513",
+            stock_name="Z.ai",
+            max_results=3,
+        )
+
+    assert actual is not None
+    assert actual.success is True
+    assert actual.provider == "Z.ai Official"
+    assert actual.results[0].published_date == "2026/08/09"
+    assert actual.results[0].url == "https://www.zhipuai.cn/en/news/200"
+    assert SearchService._is_trusted_official_news_source(actual.results[0]) is True
+
+
+def test_known_official_ir_news_parses_kioxia_sibling_date() -> None:
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.content = b"""
+        <html><body>
+          <div class="card">
+            <a href="/content/disclosure.pdf">
+              <span>First-quarter financial results</span>
+            </a>
+            <div><span class="date">August 08, 2026</span></div>
+          </div>
+        </body></html>
+    """
+
+    with patch("src.search_service.requests.get", return_value=response):
+        actual = SearchService._search_known_official_ir_news(
+            stock_code="285A.T",
+            stock_name="Kioxia Holdings",
+            max_results=3,
+        )
+
+    assert actual is not None
+    assert actual.success is True
+    assert actual.provider == "Kioxia Holdings IR"
+    assert actual.results[0].published_date == "August 08, 2026"
+    assert actual.results[0].url == (
+        "https://www.kioxia-holdings.com/content/disclosure.pdf"
+    )
+    assert SearchService._is_trusted_official_news_source(actual.results[0]) is True
+
+
 if __name__ == "__main__":
     unittest.main()

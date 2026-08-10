@@ -21,8 +21,9 @@ from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import List, Dict, Any, Optional, Tuple
 from itertools import cycle
-from urllib.parse import parse_qsl, unquote, urlparse
+from urllib.parse import parse_qsl, unquote, urljoin, urlparse
 import requests
+from lxml import html as lxml_html
 from newspaper import Article, Config
 from tenacity import (
     retry,
@@ -32,7 +33,7 @@ from tenacity import (
     before_sleep_log,
 )
 
-from data_provider.us_index_mapping import is_us_index_code
+from data_provider.us_index_mapping import is_us_index_code, is_us_stock_code
 from src.config import (
     NEWS_STRATEGY_WINDOWS,
     normalize_news_strategy_profile,
@@ -2167,11 +2168,13 @@ class SearchService:
     )
     _OFFICIAL_SOURCE_TERMS = (
         "cninfo", "sse.com", "szse.cn", "hkexnews", "sec.gov", "nasdaq.com",
-        "nyse.com", "上交所", "深交所", "港交所", "证券交易所",
+        "nyse.com", "kioxia-holdings.com", "zhipuai.cn",
+        "上交所", "深交所", "港交所", "证券交易所",
     )
     _OFFICIAL_SOURCE_HOSTS = (
         "cninfo.com.cn", "sse.com", "sse.com.cn", "szse.cn", "hkexnews.hk",
-        "sec.gov", "nasdaq.com", "nyse.com",
+        "sec.gov", "nasdaq.com", "nyse.com", "kioxia-holdings.com",
+        "zhipuai.cn",
     )
     _OFFICIAL_SOURCE_LABELS = (
         "cninfo", "hkexnews", "巨潮资讯", "巨潮资讯网",
@@ -4361,8 +4364,357 @@ class SearchService:
                     "[情报搜索] 最新消息: SearXNG 无可用结果，AkShare/东方财富兜底保留 %s 条",
                     len(fallback.results),
                 )
+
+        # Hosted runners regularly receive 429/anti-bot pages from every
+        # public SearXNG instance.  Do not let that shared infrastructure
+        # failure invalidate an otherwise complete US/HK/JP report.  US
+        # tickers first use Nasdaq's public symbol-news feed; all offshore
+        # symbols then have a Yahoo Finance SDK fallback.  Both preserve
+        # title, publication date, publisher and a clickable source URL.
+        latest_response = results.get("latest_news")
+        needs_offshore_fallback = is_foreign and (
+            latest_response is None
+            or not latest_response.success
+            or not latest_response.results
+        )
+        if needs_offshore_fallback:
+            fallback = self._search_known_official_ir_news(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                max_results=provider_max_results,
+            )
+            if fallback is not None:
+                fallback = self._filter_news_response(
+                    fallback,
+                    search_days=search_days,
+                    max_results=provider_max_results,
+                    log_scope=f"{stock_code}:{fallback.provider}:official_ir",
+                )
+            if (
+                (fallback is None or not fallback.results)
+                and is_us_stock_code(str(stock_code).strip().upper())
+            ):
+                fallback = self._search_nasdaq_symbol_news(
+                    stock_code=stock_code,
+                    stock_name=stock_name,
+                    max_results=provider_max_results,
+                )
+                fallback = self._filter_news_response(
+                    fallback,
+                    search_days=search_days,
+                    max_results=provider_max_results,
+                    log_scope=f"{stock_code}:{fallback.provider}:symbol_news",
+                )
+            if fallback is None or not fallback.results:
+                yahoo_fallback = self._search_yfinance_symbol_news(
+                    stock_code=stock_code,
+                    stock_name=stock_name,
+                    max_results=provider_max_results,
+                )
+                if yahoo_fallback.results or fallback is None or not fallback.success:
+                    fallback = yahoo_fallback
+            if fallback is not None:
+                fallback = self._filter_news_response(
+                    fallback,
+                    search_days=search_days,
+                    max_results=provider_max_results,
+                    log_scope=f"{stock_code}:{fallback.provider}:latest_news",
+                )
+                fallback = self._rank_news_response(
+                    fallback,
+                    stock_code=stock_code,
+                    stock_name=stock_name,
+                    prefer_chinese=False,
+                    max_results=provider_max_results,
+                    log_scope=f"{stock_code}:{fallback.provider}:latest_news:rank",
+                )
+                fallback = self._filter_ranked_news_for_context(
+                    fallback,
+                    log_scope=f"{stock_code}:{fallback.provider}:latest_news:admission",
+                )
+                fallback = self._limit_search_response(
+                    fallback,
+                    max_results=target_per_dimension,
+                )
+                results["latest_news"] = fallback
+                logger.info(
+                    "[情报搜索] 最新消息: 公共搜索无可用结果，%s 兜底完成，保留 %s 条",
+                    fallback.provider,
+                    len(fallback.results),
+                )
         
         return results
+
+    @staticmethod
+    def _search_known_official_ir_news(
+        *,
+        stock_code: str,
+        stock_name: str,
+        max_results: int,
+    ) -> Optional[SearchResponse]:
+        """Fetch official issuer disclosures for mapped offshore watchlist names.
+
+        These two newly listed symbols were the complete HK/JP batch in the
+        failed run.  Their official pages are server-rendered and remain useful
+        when public meta-search instances reject hosted runners.
+        """
+        canonical = canonicalize_foreign_stock_code(stock_code)
+        pages = {
+            "02513": (
+                "https://www.zhipuai.cn/en/news",
+                "Z.ai Official",
+            ),
+            "285A.T": (
+                "https://www.kioxia-holdings.com/en-jp/ir/news.html",
+                "Kioxia Holdings IR",
+            ),
+        }
+        page = pages.get(canonical)
+        if page is None:
+            return None
+
+        url, provider = page
+        started_at = time.monotonic()
+        query = f"{stock_name} {stock_code} official investor relations news"
+        try:
+            response = requests.get(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 Chrome/124 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+            root = lxml_html.fromstring(response.content)
+            items: List[SearchResult] = []
+            seen: set[tuple[str, str]] = set()
+            date_pattern = re.compile(
+                r"(?:"
+                r"\d{4}[年/.-]\s*\d{1,2}[月/.-]\s*\d{1,2}日?"
+                r"|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+                r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|"
+                r"Dec(?:ember)?)\s+\d{1,2},\s+\d{4}"
+                r")",
+                flags=re.IGNORECASE,
+            )
+            for anchor in root.xpath("//a[@href]"):
+                href = str(anchor.get("href") or "").strip()
+                if not href or href.startswith(("#", "javascript:", "mailto:")):
+                    continue
+                heading = anchor.xpath(".//h1|.//h2|.//h3|.//h4")
+                title_node = heading[0] if heading else anchor
+                title = " ".join(str(title_node.text_content()).split())
+                if len(title) < 8:
+                    continue
+
+                published = None
+                context = anchor
+                for _ in range(6):
+                    context_text = " ".join(str(context.text_content()).split())
+                    match = date_pattern.search(context_text)
+                    if match:
+                        published = match.group(0)
+                        break
+                    parent = context.getparent()
+                    if parent is None:
+                        break
+                    context = parent
+                if not published:
+                    continue
+
+                item_url = urljoin(url, href)
+                dedupe_key = (title.casefold(), item_url)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                items.append(
+                    SearchResult(
+                        title=title,
+                        snippet=f"Official issuer disclosure for {stock_name}.",
+                        url=item_url,
+                        source=provider,
+                        published_date=published,
+                    )
+                )
+                if len(items) >= max(6, max_results * 3):
+                    break
+
+            return SearchResponse(
+                query=query,
+                results=items,
+                provider=provider,
+                success=True,
+                search_time=time.monotonic() - started_at,
+            )
+        except Exception as exc:
+            logger.warning("[官方IR新闻] %s(%s) 兜底失败: %s", stock_name, stock_code, exc)
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=provider,
+                success=False,
+                error_message=str(exc),
+                search_time=time.monotonic() - started_at,
+            )
+
+    @staticmethod
+    def _search_nasdaq_symbol_news(
+        *,
+        stock_code: str,
+        stock_name: str,
+        max_results: int,
+    ) -> SearchResponse:
+        """Fetch traceable US symbol news from Nasdaq's public endpoint."""
+        started_at = time.monotonic()
+        symbol = str(stock_code or "").strip().upper().split(".", 1)[0]
+        query = f"{stock_name} {symbol} Nasdaq symbol news"
+        try:
+            response = requests.get(
+                "https://api.nasdaq.com/api/news/topic/articlebysymbol",
+                params={"q": symbol, "limit": max(6, max_results * 3), "offset": 0},
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 Chrome/124 Safari/537.36"
+                    ),
+                    "Accept": "application/json, text/plain, */*",
+                    "Referer": f"https://www.nasdaq.com/market-activity/stocks/{symbol.lower()}/news-headlines",
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            data = payload.get("data") if isinstance(payload, dict) else {}
+            rows = data.get("rows") if isinstance(data, dict) else []
+            items: List[SearchResult] = []
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                title = str(row.get("title") or "").strip()
+                description = str(row.get("description") or "").strip()
+                primary_symbol = str(row.get("primarysymbol") or "").strip().upper()
+                # Nasdaq also returns broad articles where the requested
+                # ticker is merely one of many related symbols.  Those are not
+                # company-event evidence and must not pass the fallback.
+                direct_symbol_mention = bool(
+                    re.search(rf"(?<![A-Z0-9]){re.escape(symbol)}(?![A-Z0-9])", title.upper())
+                )
+                if primary_symbol != symbol and not direct_symbol_mention:
+                    continue
+                raw_url = str(row.get("url") or "").strip()
+                if raw_url.startswith("/"):
+                    raw_url = f"https://www.nasdaq.com{raw_url}"
+                created = str(row.get("created") or "").strip()
+                if not title or not raw_url or not created:
+                    continue
+                items.append(
+                    SearchResult(
+                        title=title,
+                        snippet=description[:800],
+                        url=raw_url,
+                        source=str(row.get("publisher") or "Nasdaq").strip(),
+                        published_date=created,
+                    )
+                )
+            return SearchResponse(
+                query=query,
+                results=items,
+                provider="Nasdaq",
+                success=True,
+                search_time=time.monotonic() - started_at,
+            )
+        except Exception as exc:
+            logger.warning("[Nasdaq新闻] %s(%s) 兜底失败: %s", stock_name, stock_code, exc)
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider="Nasdaq",
+                success=False,
+                error_message=str(exc),
+                search_time=time.monotonic() - started_at,
+            )
+
+    @staticmethod
+    def _search_yfinance_symbol_news(
+        *,
+        stock_code: str,
+        stock_name: str,
+        max_results: int,
+    ) -> SearchResponse:
+        """Fetch offshore news from yfinance while accepting old/new schemas."""
+        started_at = time.monotonic()
+        query = f"{stock_name} {stock_code} Yahoo Finance news"
+        try:
+            import yfinance as yf
+            from data_provider.yfinance_fundamental_adapter import _convert_to_yf_symbol
+
+            symbol = _convert_to_yf_symbol(stock_code)
+            raw_items = yf.Ticker(symbol).get_news(count=max(6, max_results * 2))
+            items: List[SearchResult] = []
+            for raw in raw_items if isinstance(raw_items, list) else []:
+                if not isinstance(raw, dict):
+                    continue
+                content = raw.get("content") if isinstance(raw.get("content"), dict) else raw
+                provider = content.get("provider")
+                provider_name = (
+                    provider.get("displayName")
+                    if isinstance(provider, dict)
+                    else content.get("publisher") or raw.get("publisher")
+                )
+                canonical = content.get("canonicalUrl")
+                clickthrough = content.get("clickThroughUrl")
+                url = (
+                    canonical.get("url") if isinstance(canonical, dict) else None
+                ) or (
+                    clickthrough.get("url") if isinstance(clickthrough, dict) else None
+                ) or content.get("link") or raw.get("link")
+                published: Any = (
+                    content.get("pubDate")
+                    or content.get("displayTime")
+                    or content.get("providerPublishTime")
+                    or raw.get("providerPublishTime")
+                )
+                if isinstance(published, (int, float)):
+                    published = datetime.fromtimestamp(
+                        float(published), tz=timezone.utc
+                    ).isoformat()
+                title = str(content.get("title") or raw.get("title") or "").strip()
+                if not title or not url or not published:
+                    continue
+                items.append(
+                    SearchResult(
+                        title=title,
+                        snippet=str(
+                            content.get("summary")
+                            or content.get("description")
+                            or ""
+                        ).strip()[:800],
+                        url=str(url).strip(),
+                        source=str(provider_name or "Yahoo Finance").strip(),
+                        published_date=str(published),
+                    )
+                )
+            return SearchResponse(
+                query=query,
+                results=items,
+                provider="Yahoo Finance",
+                success=True,
+                search_time=time.monotonic() - started_at,
+            )
+        except Exception as exc:
+            logger.warning("[Yahoo新闻] %s(%s) 兜底失败: %s", stock_name, stock_code, exc)
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider="Yahoo Finance",
+                success=False,
+                error_message=str(exc),
+                search_time=time.monotonic() - started_at,
+            )
 
     @staticmethod
     def _search_akshare_stock_news(

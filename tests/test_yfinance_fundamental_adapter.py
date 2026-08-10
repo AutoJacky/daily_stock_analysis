@@ -282,6 +282,25 @@ class TestYfinanceFundamentalAdapter(unittest.TestCase):
         self.assertEqual(bundle.get("growth"), {})
         self.assertEqual(bundle.get("belong_boards"), [])
 
+    def test_report_date_falls_back_to_most_recent_quarter_epoch(self) -> None:
+        info = {
+            "financialCurrency": "HKD",
+            "totalRevenue": 1.2e9,
+            "operatingCashflow": 2.5e8,
+            "profitMargins": 0.12,
+            "mostRecentQuarter": int(
+                pd.Timestamp("2026-06-30", tz="UTC").timestamp()
+            ),
+        }
+        ticker = _build_mock_ticker(info)
+
+        with patch("yfinance.Ticker", return_value=ticker):
+            bundle = YfinanceFundamentalAdapter().get_fundamental_bundle("HK02513")
+
+        report = bundle["earnings"]["financial_report"]
+        self.assertEqual(report["report_date"], "2026-06-30")
+        self.assertEqual(report["revenue"], 1.2e9)
+
 
 if __name__ == "__main__":
     unittest.main()
