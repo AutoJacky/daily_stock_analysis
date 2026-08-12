@@ -69,6 +69,96 @@ def test_tencent_fetcher_parses_six_index_close_quotes_in_one_request() -> None:
     assert request.call_args.kwargs["params"]["q"] == ",".join(symbols)
 
 
+def test_tencent_fetcher_builds_complete_sina_market_breadth() -> None:
+    rows = []
+    for index in range(4_000):
+        previous = 10.0
+        current = 11.0 if index % 2 == 0 else 9.0
+        rows.append(
+            {
+                "symbol": f"sh{600000 + index}",
+                "code": str(600000 + index),
+                "name": f"测试{index}",
+                "trade": str(current),
+                "settlement": str(previous),
+                "amount": 100_000_000,
+                "ticktime": "15:00:02",
+            }
+        )
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **kwargs):
+        if "getHQNodeStockCount" in url:
+            return FakeResponse("4000")
+        page = int(kwargs["params"]["page"])
+        start = (page - 1) * 100
+        return FakeResponse(rows[start:start + 100])
+
+    fetcher = TencentFetcher()
+    with patch("data_provider.tencent_fetcher.requests.get", fake_get), patch.object(
+        fetcher,
+        "get_main_indices",
+        return_value=[{"trade_date": "2026-08-12"}] * 6,
+    ), patch(
+        "src.core.trading_calendar.infer_market_phase",
+        return_value=MarketPhase.POSTMARKET,
+    ), patch(
+        "src.core.trading_calendar.get_effective_trading_date",
+        return_value=pd.Timestamp("2026-08-12").date(),
+    ):
+        stats = fetcher.get_market_stats()
+
+    assert stats is not None
+    assert stats["trade_date"] == "2026-08-12"
+    assert stats["snapshot_count"] == 4_000
+    assert stats["up_count"] == 2_000
+    assert stats["down_count"] == 2_000
+    assert stats["limit_up_count"] == 2_000
+    assert stats["limit_down_count"] == 2_000
+    assert stats["total_amount"] == 4_000.0
+    assert stats["_source"] == "Sina Finance full A-share snapshot"
+
+
+def test_tencent_fetcher_rejects_incomplete_sina_market_snapshot() -> None:
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **kwargs):
+        if "getHQNodeStockCount" in url:
+            return FakeResponse("4000")
+        return FakeResponse([])
+
+    fetcher = TencentFetcher()
+    with patch("data_provider.tencent_fetcher.requests.get", fake_get), patch.object(
+        fetcher,
+        "get_main_indices",
+        return_value=[{"trade_date": "2026-08-12"}] * 6,
+    ), patch(
+        "src.core.trading_calendar.infer_market_phase",
+        return_value=MarketPhase.POSTMARKET,
+    ), patch(
+        "src.core.trading_calendar.get_effective_trading_date",
+        return_value=pd.Timestamp("2026-08-12").date(),
+    ):
+        assert fetcher.get_market_stats() is None
+
+
 def test_tencent_fetcher_parses_qfq_daily_response() -> None:
     payload = {
         "data": {

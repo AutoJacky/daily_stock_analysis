@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -21,6 +23,16 @@ from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, normalize_stock
 logger = logging.getLogger(__name__)
 
 _MAX_KLINE_BARS = 800
+_SINA_MARKET_COUNT_ENDPOINT = (
+    "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+    "Market_Center.getHQNodeStockCount"
+)
+_SINA_MARKET_PAGE_ENDPOINT = (
+    "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+    "Market_Center.getHQNodeData"
+)
+_SINA_MARKET_PAGE_SIZE = 100
+_SINA_MARKET_MAX_WORKERS = 10
 
 
 class TencentFetcher(BaseFetcher):
@@ -195,6 +207,219 @@ class TencentFetcher(BaseFetcher):
             )
             return None
         return [rows[symbol] for symbol in names]
+
+    def get_market_stats(self) -> Optional[Dict[str, Any]]:
+        """Fetch a complete A-share breadth snapshot from Sina in parallel.
+
+        AKShare's Sina fallback requests the same paginated public endpoint
+        serially.  With more than 5,000 listings that path can exceed the
+        provider timeout on GitHub-hosted runners.  This implementation first
+        reads the published row count, downloads every 100-row page with
+        bounded concurrency, and rejects incomplete snapshots.
+
+        Sina rows expose only a close clock (``ticktime``), not a calendar
+        date.  Outside trading hours we therefore accept the snapshot only
+        when Tencent's six-index quote independently proves the effective
+        session date.  The anchored date is returned with the statistics so
+        downstream validation does not have to infer it.
+        """
+        try:
+            from src.core.trading_calendar import (
+                MarketPhase,
+                get_effective_trading_date,
+                get_market_now,
+                infer_market_phase,
+            )
+
+            phase = infer_market_phase("cn")
+            if phase in {
+                MarketPhase.INTRADAY,
+                MarketPhase.LUNCH_BREAK,
+                MarketPhase.CLOSING_AUCTION,
+            }:
+                trade_date = get_market_now("cn").date()
+            else:
+                trade_date = get_effective_trading_date("cn")
+                index_rows = self.get_main_indices("cn")
+                index_dates = {
+                    str(row.get("trade_date") or "")
+                    for row in (index_rows or [])
+                    if row.get("trade_date")
+                }
+                if index_dates != {trade_date.isoformat()}:
+                    logger.warning(
+                        "[MarketStats] component=market_stats provider=TencentFetcher "
+                        "api=sina_full_market action=reject reason=index_session_unverified "
+                        "expected=%s actual=%s",
+                        trade_date,
+                        sorted(index_dates),
+                    )
+                    return None
+
+            headers = {
+                "Referer": "https://finance.sina.com.cn/",
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json,text/plain,*/*",
+            }
+            count_response = requests.get(
+                _SINA_MARKET_COUNT_ENDPOINT,
+                params={"node": "hs_a"},
+                headers=headers,
+                timeout=self._HTTP_TIMEOUT_SECONDS,
+            )
+            count_response.raise_for_status()
+            expected_count = int(count_response.json())
+            if expected_count < 4_000 or expected_count > 10_000:
+                logger.warning(
+                    "[MarketStats] component=market_stats provider=TencentFetcher "
+                    "api=sina_full_market action=reject reason=implausible_count count=%s",
+                    expected_count,
+                )
+                return None
+
+            page_count = int(math.ceil(expected_count / _SINA_MARKET_PAGE_SIZE))
+
+            def fetch_page(page: int) -> List[Dict[str, Any]]:
+                response = requests.get(
+                    _SINA_MARKET_PAGE_ENDPOINT,
+                    params={
+                        "page": page,
+                        "num": _SINA_MARKET_PAGE_SIZE,
+                        "sort": "symbol",
+                        "asc": "1",
+                        "node": "hs_a",
+                        "symbol": "",
+                        "_s_r_a": "page",
+                    },
+                    headers=headers,
+                    timeout=self._HTTP_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                return payload if isinstance(payload, list) else []
+
+            started_at = datetime.now()
+            pages: Dict[int, List[Dict[str, Any]]] = {}
+            with ThreadPoolExecutor(max_workers=_SINA_MARKET_MAX_WORKERS) as executor:
+                futures = {
+                    executor.submit(fetch_page, page): page
+                    for page in range(1, page_count + 1)
+                }
+                for future in as_completed(futures):
+                    page = futures[future]
+                    try:
+                        pages[page] = future.result()
+                    except Exception as exc:
+                        logger.warning(
+                            "[MarketStats] component=market_stats provider=TencentFetcher "
+                            "api=sina_full_market action=page_failed page=%s error=%s",
+                            page,
+                            exc,
+                        )
+
+            rows = [row for page in sorted(pages) for row in pages[page]]
+            symbols = {str(row.get("symbol") or "") for row in rows if row.get("symbol")}
+            if len(rows) != expected_count or len(symbols) != expected_count:
+                logger.warning(
+                    "[MarketStats] component=market_stats provider=TencentFetcher "
+                    "api=sina_full_market action=reject reason=incomplete_snapshot "
+                    "expected=%s rows=%s unique=%s pages=%s/%s",
+                    expected_count,
+                    len(rows),
+                    len(symbols),
+                    len(pages),
+                    page_count,
+                )
+                return None
+
+            stats = _calculate_sina_market_stats(rows)
+            if not stats:
+                return None
+            stats.update(
+                {
+                    "trade_date": trade_date.isoformat(),
+                    "snapshot_count": expected_count,
+                    "_source": "Sina Finance full A-share snapshot",
+                }
+            )
+            logger.info(
+                "[MarketStats] component=market_stats provider=TencentFetcher "
+                "api=sina_full_market action=success trade_date=%s rows=%s "
+                "up=%s down=%s flat=%s elapsed=%.2fs",
+                trade_date,
+                expected_count,
+                stats["up_count"],
+                stats["down_count"],
+                stats["flat_count"],
+                (datetime.now() - started_at).total_seconds(),
+            )
+            return stats
+        except Exception as exc:
+            logger.warning(
+                "[MarketStats] component=market_stats provider=TencentFetcher "
+                "api=sina_full_market action=failed error=%s",
+                exc,
+            )
+            return None
+
+
+def _calculate_sina_market_stats(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Calculate breadth only from valid, traded A-share quote rows."""
+    up_count = down_count = flat_count = 0
+    limit_up_count = limit_down_count = 0
+    total_amount = 0.0
+
+    for row in rows:
+        try:
+            code = normalize_stock_code(str(row.get("code") or row.get("symbol") or ""))
+            name = str(row.get("name") or "")
+            current = float(row.get("trade"))
+            previous = float(row.get("settlement"))
+            amount = float(row.get("amount") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not code or current <= 0 or previous <= 0 or amount <= 0:
+            continue
+
+        if current > previous:
+            up_count += 1
+        elif current < previous:
+            down_count += 1
+        else:
+            flat_count += 1
+        total_amount += amount
+
+        if is_bse_code(code):
+            limit_ratio = 0.30
+        elif code.startswith(("300", "301", "688")):
+            limit_ratio = 0.20
+        elif "ST" in name.upper():
+            limit_ratio = 0.05
+        else:
+            limit_ratio = 0.10
+        limit_up = math.floor(previous * (1 + limit_ratio) * 100 + 0.5) / 100.0
+        limit_down = math.floor(previous * (1 - limit_ratio) * 100 + 0.5) / 100.0
+        if abs(current - limit_up) < 0.005:
+            limit_up_count += 1
+        if abs(current - limit_down) < 0.005:
+            limit_down_count += 1
+
+    participation = up_count + down_count + flat_count
+    if participation < 3_500:
+        logger.warning(
+            "[MarketStats] component=market_stats provider=TencentFetcher "
+            "api=sina_full_market action=reject reason=insufficient_traded_rows count=%s",
+            participation,
+        )
+        return None
+    return {
+        "up_count": up_count,
+        "down_count": down_count,
+        "flat_count": flat_count,
+        "limit_up_count": limit_up_count,
+        "limit_down_count": limit_down_count,
+        "total_amount": total_amount / 1e8,
+    }
 
 
 def _to_tencent_symbol(stock_code: str) -> str:

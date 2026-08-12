@@ -980,7 +980,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 overview.limit_down_count = stats.get('limit_down_count', 0)
                 overview.total_amount = stats.get('total_amount', 0.0)
                 overview.market_stats_source = str(stats.get('_source') or '')
-                overview.market_stats_trade_date = self._resolve_cn_stats_trade_date()
+                overview.market_stats_trade_date = str(
+                    stats.get("trade_date") or self._resolve_cn_stats_trade_date()
+                )
                 overview.market_stats_available = bool(
                     overview.up_count
                     + overview.down_count
