@@ -80,8 +80,23 @@ jobs:
       - name: 创建必要目录
         run: |
           mkdir -p data logs reports
+
+      - name: 检查免费千问融合条件
+        id: qwen_fusion
+        env:
+          QWEN_FREE_FUSION_ENABLED: ${{ vars.QWEN_FREE_FUSION_ENABLED || 'false' }}
+          MODELSCOPE_ACCESS_TOKEN: ${{ secrets.MODELSCOPE_ACCESS_TOKEN }}
+        run: |
+          if [ "${QWEN_FREE_FUSION_ENABLED,,}" = "true" ] && [ -n "$MODELSCOPE_ACCESS_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "✅ 免费千问融合已启用（Token 仅作为 GitHub 加密 Secret 注入）"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ️ 免费千问融合未启用，保持原有报告推送方式"
+          fi
       
       - name: 执行股票分析
+        id: stock_analysis
         env:
           # ==========================================
           # AI 配置
@@ -466,11 +481,13 @@ jobs:
 
           # 判断运行模式
           MODE="${{ github.event.inputs.mode || 'full' }}"
+          FUSION_MARKET=""
           if [ "${SCHEDULE_EXPRESSION:-}" = "10 7 * * 1-5" ]; then
             # A股收盘任务：先推A股复盘，再分析自选中的A股。
             MODE="full"
             export MARKET_REVIEW_REGION="cn"
             export STOCK_MARKET_FILTER="cn"
+            FUSION_MARKET="cn"
           elif [ "${SCHEDULE_EXPRESSION:-}" = "15 8 * * 1-5" ]; then
             # 亚洲收盘任务：香港/日股均收盘后，仅分析对应自选。
             MODE="stocks-only"
@@ -480,7 +497,9 @@ jobs:
             MODE="full"
             export MARKET_REVIEW_REGION="us"
             export STOCK_MARKET_FILTER="us"
+            FUSION_MARKET="us"
           fi
+          echo "fusion_market=$FUSION_MARKET" >> "$GITHUB_OUTPUT"
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"
@@ -562,6 +581,10 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.send_notification }}" = "false" ]; then
             NOTIFY_ARG="--no-notify"
             echo "🔕 本次手动运行已关闭推送通知"
+          elif [ "${{ steps.qwen_fusion.outputs.enabled }}" = "true" ] && [ -n "$FUSION_MARKET" ]; then
+            # 双 AI 模式只推融合终稿，源报告仍保存为审计附件。
+            NOTIFY_ARG="--no-notify"
+            echo "🤝 本轮将只推送免费千问复核后的双 AI 融合终稿"
           fi
 
           # 执行分析
@@ -572,6 +595,21 @@ jobs:
           else
             python main.py $FORCE_RUN_ARG $NOTIFY_ARG
           fi
+
+      - name: 生成并推送双 AI 融合终稿
+        if: >-
+          success() &&
+          steps.qwen_fusion.outputs.enabled == 'true' &&
+          steps.stock_analysis.outputs.fusion_market != ''
+        env:
+          MODELSCOPE_ACCESS_TOKEN: ${{ secrets.MODELSCOPE_ACCESS_TOKEN }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
+          NOTIFICATION_REPORT_CHANNELS: pushplus
+        run: |
+          python scripts/fuse_qwen_market_report.py \
+            --market "${{ steps.stock_analysis.outputs.fusion_market }}" \
+            --send
 
       - name: 校验每日学习数据库
         id: learning_db
