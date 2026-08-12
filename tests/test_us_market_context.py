@@ -468,7 +468,7 @@ def test_workflow_has_separate_us_close_full_market_filtered_schedule():
     from pathlib import Path
 
     text = Path(".github/workflows/00-daily-analysis.yml").read_text(encoding="utf-8")
-    assert "cron: '15 21 * * 1-5'" in text
+    assert "cron: '45 21 * * 1-5'" in text
     assert 'MODE="full"' in text
     assert 'export MARKET_REVIEW_REGION="us"' in text
     assert 'export STOCK_MARKET_FILTER="us"' in text

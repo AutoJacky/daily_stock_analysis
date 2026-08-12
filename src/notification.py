@@ -2785,6 +2785,9 @@ class NotificationService(
             if report_language == "zh"
             else "> **Data status**: Intraday snapshot; price, change and volume are not final."
         ) if is_partial_bar else ""
+        display_source = self._get_source_display_name(
+            snapshot.get('source', 'N/A'), report_language
+        )
 
         lines.extend([
             f"### 📈 {snapshot_heading}",
@@ -2801,13 +2804,20 @@ class NotificationService(
         ])
 
         if "price" in snapshot:
-            display_source = self._get_source_display_name(snapshot.get('source', 'N/A'), report_language)
             lines.extend([
                 "",
                 f"| {labels['current_price_label']} | {labels['volume_ratio_label']} | {labels['turnover_rate_label']} | {labels['source_label']} |",
                 "|-------|------|--------|----------|",
                 f"| {snapshot.get('price', 'N/A')} | {snapshot.get('volume_ratio', 'N/A')} | "
                 f"{snapshot.get('turnover_rate', 'N/A')} | {display_source} |",
+            ])
+
+        if snapshot.get("pe_ratio") is not None or snapshot.get("pb_ratio") is not None:
+            lines.extend([
+                "",
+                "| PE(TTM/动态) | PB | 估值行情来源 |",
+                "|------:|------:|----------|",
+                f"| {snapshot.get('pe_ratio', 'N/A')} | {snapshot.get('pb_ratio', 'N/A')} | {display_source} |",
             ])
 
         lines.append("")

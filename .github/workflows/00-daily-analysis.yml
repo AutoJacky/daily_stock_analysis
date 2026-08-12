@@ -1,12 +1,12 @@
 name: 每日股票分析
 
 on:
-  # A股：北京时间 15:10；美股：21:15 UTC（冬令时收盘后15分钟，
-  # 夏令时收盘后75分钟，优先保证完整收盘数据）。
+  # A股：北京时间 16:00，给千问原生任务与本机桥接预留缓冲；
+  # 美股：21:45 UTC（北京时间次日 05:45）。
   schedule:
-    - cron: '10 7 * * 1-5'
+    - cron: '0 8 * * 1-5'
     - cron: '15 8 * * 1-5'
-    - cron: '15 21 * * 1-5'
+    - cron: '45 21 * * 1-5'
   
   # 手动触发
   workflow_dispatch:
@@ -491,7 +491,7 @@ jobs:
           # 判断运行模式
           MODE="${{ github.event.inputs.mode || 'full' }}"
           FUSION_MARKET=""
-          if [ "${SCHEDULE_EXPRESSION:-}" = "10 7 * * 1-5" ]; then
+          if [ "${SCHEDULE_EXPRESSION:-}" = "0 8 * * 1-5" ]; then
             # A股收盘任务：先推A股复盘，再分析自选中的A股。
             MODE="full"
             export MARKET_REVIEW_REGION="cn"
@@ -501,7 +501,7 @@ jobs:
             # 亚洲收盘任务：香港/日股均收盘后，仅分析对应自选。
             MODE="stocks-only"
             export STOCK_MARKET_FILTER="hk,jp"
-          elif [ "${SCHEDULE_EXPRESSION:-}" = "15 21 * * 1-5" ]; then
+          elif [ "${SCHEDULE_EXPRESSION:-}" = "45 21 * * 1-5" ]; then
             # 美股收盘任务：先推美股复盘，再分析自选中的美股。
             MODE="full"
             export MARKET_REVIEW_REGION="us"
@@ -616,6 +616,8 @@ jobs:
           steps.stock_analysis.outputs.fusion_market != ''
         env:
           MODELSCOPE_ACCESS_TOKEN: ${{ secrets.MODELSCOPE_ACCESS_TOKEN }}
+          QWEN_NATIVE_REPORT_CN_B64: ${{ secrets.QWEN_NATIVE_REPORT_CN_B64 }}
+          QWEN_NATIVE_REPORT_US_B64: ${{ secrets.QWEN_NATIVE_REPORT_US_B64 }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
           NOTIFICATION_REPORT_CHANNELS: pushplus

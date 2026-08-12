@@ -1989,6 +1989,46 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("盘中快照", output)
 
     @mock.patch("src.notification.get_config")
+    def test_market_snapshot_renders_structured_valuation(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config()
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=50,
+            trend_prediction="震荡",
+            operation_advice="观望",
+            analysis_summary="等待",
+            market_snapshot={
+                "close": "1500.00",
+                "prev_close": "1490.00",
+                "open": "1492.00",
+                "high": "1510.00",
+                "low": "1485.00",
+                "pct_chg": "0.67%",
+                "change_amount": "10.00",
+                "amplitude": "1.68%",
+                "volume": "1.00 万股",
+                "amount": "1.50 亿元",
+                "price": "1500.00",
+                "turnover_rate": "0.50%",
+                "volume_ratio": 1.0,
+                "source": "tencent",
+                "pe_ratio": 22.5,
+                "pb_ratio": 7.1,
+            },
+        )
+        lines = []
+
+        service._append_market_snapshot(lines, result)
+        output = "\n".join(lines)
+
+        self.assertIn("PE(TTM/动态)", output)
+        self.assertIn("| 22.5 | 7.1 | 腾讯财经 |", output)
+
+    @mock.patch("src.notification.get_config")
     def test_related_boards_drops_signal_columns_when_no_sector_data(
         self, mock_get_config: mock.MagicMock
     ):

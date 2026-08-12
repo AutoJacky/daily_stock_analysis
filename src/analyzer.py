@@ -5021,6 +5021,11 @@ class GeminiAnalyzer:
                 "price": self._format_price(realtime.get('price')),
                 "volume_ratio": realtime.get('volume_ratio', 'N/A'),
                 "turnover_rate": self._format_percent(realtime.get('turnover_rate')),
+                # Preserve structured valuation fields for deterministic
+                # notification/fusion renderers; do not force them to scrape
+                # model-authored prose such as a checklist sentence.
+                "pe_ratio": realtime.get('pe_ratio'),
+                "pb_ratio": realtime.get('pb_ratio'),
                 "source": getattr(realtime.get('source'), 'value', realtime.get('source', 'N/A')),
             })
 

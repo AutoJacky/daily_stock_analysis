@@ -55,3 +55,24 @@ def test_market_snapshot_marks_intraday_realtime_bar_as_partial() -> None:
     assert snapshot["quote_section_title"] == "最新行情"
     assert snapshot["close_label"] == "盘中估算价"
     assert snapshot["is_partial_bar"] is True
+
+
+def test_market_snapshot_preserves_structured_pe_and_pb() -> None:
+    analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+    snapshot = analyzer._build_market_snapshot(
+        {
+            "date": "2026-08-11",
+            "code": "600519",
+            "today": {"close": 1500.0},
+            "yesterday": {"close": 1490.0},
+            "realtime": {
+                "price": 1500.0,
+                "pe_ratio": 22.5,
+                "pb_ratio": 7.1,
+                "source": "tencent",
+            },
+        }
+    )
+
+    assert snapshot["pe_ratio"] == 22.5
+    assert snapshot["pb_ratio"] == 7.1

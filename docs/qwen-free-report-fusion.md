@@ -8,7 +8,7 @@
 - 千问只负责指出一致项、分歧、风险动作、机会观察和数据缺口，不能覆盖已校验行情事实。
 - 千问输出中出现但两份源报告都不存在的数字会被自动标记为未采用。
 - 发送到魔搭的内容只包含市场报告和股票分析，不包含 ModelScope Token、PushPlus Token、账号或其他密钥。
-- 仅调用 `https://api-inference.modelscope.cn/v1/chat/completions` 和 `Qwen/Qwen3.5-397B-A17B`。遇到 429、免费容量不足或接口错误会停止，不调用任何收费回退。
+- 仅调用 `https://api-inference.modelscope.cn/v1/chat/completions` 和 `Qwen/Qwen3.5-397B-A17B`。遇到 429、免费容量不足或接口错误时跳过千问审计并明确标注，程序校验报告仍照常生成；绝不调用任何收费回退。
 
 ## 本地运行
 
@@ -30,4 +30,50 @@ python scripts/fuse_qwen_market_report.py --market us --send
 
 满足后，北京时间 A股收盘批次和美股收盘批次会关闭原始报告通知，仍保存完整报告，然后生成并发送一份融合终稿。缺少任一配置时保持原有推送方式，避免正式报告静默中断。
 
+三源融合启用后，A股批次为北京时间工作日 16:00，美股批次为北京时间工作日次日 05:45；港股/日股批次仍为 16:15。时间差用于等待千问原生任务完成并由本机桥接上传。
+
 手动验收可在 workflow dispatch 中选择 `fusion_market=cn|us`。当 `send_notification=false` 时只生成并上传当天的融合报告，不发送微信；融合器不会读取仓库里旧日期的报告作为本轮输入。
+
+## 机构框架与三源融合
+
+终稿按以下证据优先级处理：
+
+1. 程序校验数据：唯一权威数字源，字段附状态、来源与数据日。
+2. 千问客户端原生定时报告：观点源；数字必须被程序数据再次确认。
+3. 魔搭免费千问：审计源；只提炼一致项、分歧、风险和机会。
+
+机构框架包含估值温度计、利率与 ERP 代理、全球市场联动、资金与杠杆、行业估值/景气状态、自选股机构卡及无伪概率情景。免费源未覆盖的科创50同口径估值、ETF申赎、行业高频景气、机构一致目标价等会显示 `missing` 或 `not_supported`，不会由模型补造。
+
+## 接入千问客户端定时报告
+
+完整的新建任务名称、时间与可直接复制的提示词见 [qwen-native-task-prompts.md](qwen-native-task-prompts.md)。
+
+千问客户端没有公开稳定的定时任务结果 API。请在两个千问任务的 Prompt 末尾增加保存要求，让任务把当天最终 Markdown 同时写到固定文件，例如：
+
+```text
+完成报告后，必须将完整 Markdown 原文覆盖保存到：
+/Users/yueyue/Documents/qwen-finance-reports/cn/latest.md
+首行写“# A股盘后复盘报告”，正文必须包含报告日期、数据来源和数据日。
+```
+
+美股任务保存到 `.../us/latest.md`，首行写 `# 美股科技半导体分析`。美股载荷按纽约市场日期校验，避免北京时间跨日后误判为过期。任务完成后运行：
+
+```bash
+python scripts/publish_qwen_native_report.py --market cn \
+  --report /Users/yueyue/Documents/qwen-finance-reports/cn/latest.md \
+  --gh .tools/gh/gh_2.96.0_macOS_arm64/bin/gh
+
+python scripts/publish_qwen_native_report.py --market us \
+  --report /Users/yueyue/Documents/qwen-finance-reports/us/latest.md \
+  --gh .tools/gh/gh_2.96.0_macOS_arm64/bin/gh
+```
+
+脚本只把正文写入 GitHub Encrypted Secret，不提交 Git 历史、不读取千问登录态。云端只接受当天且市场匹配的载荷；旧报告和错市场报告会被拒绝。
+
+macOS 可安装每 5 分钟检查一次的本机桥接（免费、无常驻云服务）：
+
+```bash
+python scripts/install_qwen_report_bridge_macos.py
+```
+
+桥接只在上述固定文件当天发生变化时上传，正文通过标准输入交给 `gh secret set` 并在本机加密，不出现在命令行参数或日志中。

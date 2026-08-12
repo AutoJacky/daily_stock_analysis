@@ -39,6 +39,8 @@ def test_fusion_step_uses_local_free_only_script_and_pushplus() -> None:
     assert "github.event.inputs.send_notification" in fusion["run"]
     assert fusion["env"]["NOTIFICATION_REPORT_CHANNELS"] == "pushplus"
     assert "secrets.MODELSCOPE_ACCESS_TOKEN" in fusion["env"]["MODELSCOPE_ACCESS_TOKEN"]
+    assert "secrets.QWEN_NATIVE_REPORT_CN_B64" in fusion["env"]["QWEN_NATIVE_REPORT_CN_B64"]
+    assert "secrets.QWEN_NATIVE_REPORT_US_B64" in fusion["env"]["QWEN_NATIVE_REPORT_US_B64"]
 
 
 def test_manual_dispatch_can_choose_fusion_market_for_no_notify_validation() -> None:

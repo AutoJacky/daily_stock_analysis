@@ -73,9 +73,7 @@ def test_call_uses_only_fixed_modelscope_free_endpoint_and_scrubs_new_numbers():
     with patch("src.services.qwen_free_report_fusion.requests.post", return_value=response) as post:
         review = call_free_qwen_review("cn", sources, token="secret")
 
-    assert review["summary"] == (
-        "上涨占比74.5%，未来（千问新增数值已省略，具体数值见下方权威底稿）天保证上涨"
-    )
+    assert review["summary"] == "上涨占比74.5%。"
     assert review["risk_actions"] == ["仓位不超过60%"]
     assert post.call_args.args[0] == MODELSCOPE_API_URL
     assert post.call_args.kwargs["json"]["model"] == MODELSCOPE_FREE_MODEL
@@ -86,6 +84,16 @@ def test_free_quota_error_stops_without_fallback():
     response = _response({}, status_code=429)
     with patch("src.services.qwen_free_report_fusion.requests.post", return_value=response) as post:
         with pytest.raises(QwenFreeFusionError, match="未切换到收费服务"):
+            call_free_qwen_review(
+                "cn", FusionSources(MARKET_REPORT, STOCK_REPORT), token="secret"
+            )
+    assert post.call_count == 1
+
+
+def test_http_200_with_empty_choices_stops_without_paid_fallback():
+    response = _response({"choices": []}, status_code=200)
+    with patch("src.services.qwen_free_report_fusion.requests.post", return_value=response) as post:
+        with pytest.raises(QwenFreeFusionError, match="choices为空.*未切换到收费服务"):
             call_free_qwen_review(
                 "cn", FusionSources(MARKET_REPORT, STOCK_REPORT), token="secret"
             )
@@ -107,12 +115,35 @@ def test_render_keeps_authoritative_source_facts_and_labels_qwen_role():
         generated_at=datetime(2026, 8, 10, 18, 0),
     )
 
-    assert "A股双AI融合复盘 · 2026-08-10" in report
-    assert "免费千问负责独立复核" in report
+    assert "A股多源机构框架复盘 · 2026-08-10" in report
+    assert "魔搭免费千问负责独立观点和交叉审计" in report
     assert "5537 只证券" in report
     assert "4067 / 1391 / 79" in report
-    assert "贵州茅台(600519)" in report
+    assert "贵州茅台 (600519)" in report
     assert "不构成投资建议" in report
+
+
+def test_render_labels_free_qwen_outage_without_claiming_audit_completed():
+    report = render_fused_report(
+        "cn",
+        FusionSources(MARKET_REPORT, STOCK_REPORT, native_qwen_report="# A股报告"),
+        {
+            "_audit_status": "unavailable",
+            "_audit_note": "免费容量不足",
+            "summary": "仅保留程序事实。",
+            "consensus": [],
+            "disagreements": [],
+            "risk_actions": [],
+            "opportunity_watch": [],
+            "data_gaps": ["免费审计未完成"],
+        },
+        generated_at=datetime(2026, 8, 10, 18, 0),
+    )
+
+    assert "1源已确认的部分" in report
+    assert "因审计不可用，本轮未自动合并其观点" in report
+    assert "魔搭免费千问审计：未完成（免费容量不足）" in report
+    assert "未调用任何收费回退" in report
 
 
 def test_stock_prompt_keeps_late_core_conclusion():

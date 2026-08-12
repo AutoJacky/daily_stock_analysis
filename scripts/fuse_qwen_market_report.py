@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import json
+import os
 import re
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +26,9 @@ from src.services.qwen_free_report_fusion import (  # noqa: E402
     call_free_qwen_review,
     render_fused_report,
 )
+from src.services.institutional_market_context import (  # noqa: E402
+    InstitutionalMarketContextCollector,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,10 +39,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reports-dir", type=Path, default=PROJECT_ROOT / "reports")
     parser.add_argument("--market-report", type=Path)
     parser.add_argument("--stock-report", type=Path)
+    parser.add_argument("--native-qwen-report", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--send", action="store_true")
     parser.add_argument("--timeout", type=float, default=180)
     return parser.parse_args()
+
+
+def _native_report_from_environment(market: str, today: date) -> str:
+    """Read a same-day report carried in an encrypted GitHub secret."""
+
+    encoded = os.getenv(f"QWEN_NATIVE_REPORT_{market.upper()}_B64", "").strip()
+    if not encoded:
+        return ""
+    try:
+        payload = json.loads(base64.b64decode(encoded, validate=True).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("千问原生报告密文载荷无法解析") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("千问原生报告载荷不是对象")
+    if payload.get("market") != market:
+        raise ValueError("千问原生报告市场不匹配")
+    if payload.get("report_date") != today.isoformat():
+        raise ValueError("千问原生报告不是当天内容，已拒绝融合")
+    report = str(payload.get("content") or "").strip()
+    if not report:
+        raise ValueError("千问原生报告正文为空")
+    return report
+
+
+def _market_report_date(market: str, now: datetime | None = None) -> date:
+    """Canonical session date shared by local bridge and GitHub runner."""
+
+    now = now or datetime.now().astimezone()
+    timezone = ZoneInfo("Asia/Shanghai" if market == "cn" else "America/New_York")
+    return now.astimezone(timezone).date()
 
 
 def _today_report(directory: Path, prefix: str) -> Path | None:
@@ -81,6 +119,23 @@ def main() -> int:
     except ValueError as exc:
         print(f"错误：{exc}；融合已停止。", file=sys.stderr)
         return 2
+    try:
+        native_qwen_report = (
+            args.native_qwen_report.read_text(encoding="utf-8")
+            if args.native_qwen_report is not None
+            else _native_report_from_environment(
+                args.market, _market_report_date(args.market)
+            )
+        )
+    except OSError as exc:
+        print(f"错误：无法读取显式千问原生报告：{exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(f"警告：{exc}；本轮忽略该原生报告并继续免费复核。", file=sys.stderr)
+        native_qwen_report = ""
+    institutional_context = InstitutionalMarketContextCollector().collect(
+        args.market, _market_report_date(args.market)
+    )
     sources = FusionSources(
         market_report=market_report,
         stock_report=(
@@ -88,6 +143,8 @@ def main() -> int:
             if stock_path is not None and stock_path.is_file()
             else ""
         ),
+        native_qwen_report=native_qwen_report,
+        institutional_context=institutional_context,
     )
     try:
         review = call_free_qwen_review(
@@ -96,8 +153,17 @@ def main() -> int:
             timeout_seconds=args.timeout,
         )
     except QwenFreeFusionError as exc:
-        print(str(exc), file=sys.stderr)
-        return 3
+        print(f"警告：{exc} 将继续生成程序校验版，不调用任何收费模型。", file=sys.stderr)
+        review = {
+            "_audit_status": "unavailable",
+            "_audit_note": str(exc),
+            "summary": "免费千问审计暂不可用；本报告仅保留程序校验事实和规则，不采用未经交叉审计的模型观点。",
+            "consensus": [],
+            "disagreements": [],
+            "risk_actions": [],
+            "opportunity_watch": [],
+            "data_gaps": ["魔搭免费千问审计本轮未完成；未调用任何收费回退。"],
+        }
 
     content = render_fused_report(args.market, sources, review)
     output = args.output or (
@@ -113,7 +179,7 @@ def main() -> int:
         sender = PushplusSender(get_config())
         sent = sender.send_to_pushplus(
             content,
-            title=f"🤝 {market_name}双AI融合复盘 · {datetime.now():%m-%d}",
+            title=f"🏛️ {market_name}多源机构框架复盘 · {datetime.now():%m-%d}",
             timeout_seconds=20,
         )
         if not sent:
