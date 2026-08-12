@@ -4,7 +4,11 @@ from datetime import date
 
 import pytest
 
-from scripts.fuse_qwen_market_report import _market_report_date, _native_report_from_environment
+from scripts.fuse_qwen_market_report import (
+    _market_report_date,
+    _native_report_from_environment,
+    _strict_report_session_date,
+)
 from scripts import publish_qwen_native_report
 from scripts.publish_qwen_native_report import build_payload
 
@@ -33,6 +37,14 @@ def test_us_report_date_uses_new_york_session_date():
     assert _market_report_date(
         "us", datetime(2026, 8, 12, 21, 45, tzinfo=timezone.utc)
     ) == date(2026, 8, 12)
+
+
+def test_institutional_context_uses_strict_report_session_not_wall_clock():
+    report = """# 🎯 大盘复盘
+
+## 2026-08-11 美股大盘复盘（严格数据版）
+"""
+    assert _strict_report_session_date(report, "us") == date(2026, 8, 11)
 
 
 def test_publisher_passes_secret_only_through_stdin(monkeypatch, tmp_path):

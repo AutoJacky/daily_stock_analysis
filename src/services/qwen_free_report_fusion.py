@@ -498,6 +498,56 @@ def _render_institutional_context(context: Mapping[str, Any]) -> str:
     if not context:
         return "- 本轮机构框架数据包未生成；相关结论禁止补写。"
     lines: List[str] = []
+    if str(context.get("market") or "cn") == "us":
+        coverage = context.get("coverage") if isinstance(context.get("coverage"), Mapping) else {}
+        valuation_coverage = (
+            coverage.get("valuation")
+            if isinstance(coverage.get("valuation"), Mapping)
+            else {}
+        )
+        capital_coverage = (
+            coverage.get("capital_flow")
+            if isinstance(coverage.get("capital_flow"), Mapping)
+            else {}
+        )
+        lines.append(_block_line("美股指数估值历史分位", valuation_coverage))
+        lines.append(_block_line("美股ETF申赎与机构资金流", capital_coverage))
+        lines.extend(["", "### 🌍 全球联动"])
+        global_block = (
+            context.get("global_linkage")
+            if isinstance(context.get("global_linkage"), Mapping)
+            else {}
+        )
+        global_data = (
+            global_block.get("data")
+            if isinstance(global_block.get("data"), Mapping)
+            else {}
+        )
+        if global_data:
+            for key in (
+                "sp500", "nasdaq", "semiconductor", "dxy", "usdcny",
+                "usdcnh", "brent", "gold", "copper", "vix",
+            ):
+                item = global_data.get(key)
+                if not isinstance(item, Mapping):
+                    continue
+                change = item.get("change_pct")
+                change_text = (
+                    f"{float(change):+.2f}%"
+                    if isinstance(change, (int, float))
+                    else "变化幅度未取得"
+                )
+                lines.append(
+                    f"- **{item.get('name', key)}**：{item.get('close', 'N/A')}｜"
+                    f"{change_text}｜数据日 {item.get('as_of', '未取得')}"
+                )
+            lines.append(
+                f"- 来源：{global_block.get('source')}；{global_block.get('note', '')}"
+            )
+        else:
+            lines.append(_block_line("全球联动", global_block))
+        return "\n".join(lines)
+
     valuation = context.get("valuation") if isinstance(context.get("valuation"), Mapping) else {}
     for key, label in (("hs300", "沪深300"), ("csi500", "中证500"), ("star50", "科创50")):
         block = valuation.get(key) if isinstance(valuation.get(key), Mapping) else {}
@@ -688,8 +738,8 @@ def _extract_stock_cards(report: str, max_cards: int = 8) -> str:
 
 
 def _scenario_block(market_report: str) -> str:
-    add = re.search(r"(?m)^- \*\*加(?:仓|风险)触发\*\*：([^\n]+)", market_report)
-    reduce = re.search(r"(?m)^- \*\*减(?:仓|风险)触发\*\*：([^\n]+)", market_report)
+    add = re.search(r"(?m)^- \*\*加(?:仓|风险)(?:触发|条件)\*\*：([^\n]+)", market_report)
+    reduce = re.search(r"(?m)^- \*\*减(?:仓|风险)(?:触发|条件)\*\*：([^\n]+)", market_report)
     return "\n".join(
         [
             "- **基准情景（不设伪概率）**：核心条件未突破也未失效，仓位保持在程序规则区间内。",

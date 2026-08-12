@@ -146,6 +146,49 @@ def test_render_labels_free_qwen_outage_without_claiming_audit_completed():
     assert "未调用任何收费回退" in report
 
 
+def test_us_render_hides_cn_only_context_and_keeps_risk_conditions():
+    us_market = """# 美股大盘复盘
+
+## 2026-08-11 美股大盘复盘（严格数据版）
+
+- **加风险条件**：行业覆盖扩大且VIX不反向上升。
+- **减风险条件**：指数转弱且短端利率上行。
+"""
+    context = {
+        "market": "us",
+        "coverage": {
+            "valuation": {
+                "status": "missing", "source": "test", "as_of": "",
+                "data": {}, "note": "尚未接入",
+            },
+            "capital_flow": {
+                "status": "missing", "source": "test", "as_of": "",
+                "data": {}, "note": "尚未接入",
+            },
+        },
+        "global_linkage": {
+            "status": "missing", "source": "test", "as_of": "", "data": {},
+        },
+    }
+    report = render_fused_report(
+        "us",
+        FusionSources(us_market, "", institutional_context=context),
+        {
+            "summary": "按程序规则等待。", "consensus": [],
+            "disagreements": [], "risk_actions": [],
+            "opportunity_watch": [], "data_gaps": [],
+        },
+        generated_at=datetime(2026, 8, 12, 18, 0),
+    )
+
+    assert "美股指数估值历史分位" in report
+    assert "美股ETF申赎与机构资金流" in report
+    assert "沪深300" not in report
+    assert "北向资金" not in report
+    assert "行业覆盖扩大且VIX不反向上升" in report
+    assert "指数转弱且短端利率上行" in report
+
+
 def test_stock_prompt_keeps_late_core_conclusion():
     filler = "\n".join(f"普通描述 {index}" for index in range(120))
     report = f"# 报告\n{filler}\n### 核心结论\n一句话决策：持有观察。"

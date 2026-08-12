@@ -76,6 +76,19 @@ def _market_report_date(market: str, now: datetime | None = None) -> date:
     return now.astimezone(timezone).date()
 
 
+def _strict_report_session_date(report: str, market: str) -> date:
+    """Extract the complete session validated by the strict market report."""
+
+    marker = "美股" if market == "us" else "大盘复盘"
+    match = re.search(
+        rf"(?m)^##\s+(20\d{{2}}-\d{{2}}-\d{{2}})\s+[^\n]*{marker}[^\n]*严格数据版",
+        report,
+    )
+    if match is None:
+        raise ValueError("严格市场报告缺少可验证的交易日标题")
+    return date.fromisoformat(match.group(1))
+
+
 def _today_report(directory: Path, prefix: str) -> Path | None:
     """Select only a report generated for today's workflow run."""
 
@@ -133,8 +146,13 @@ def main() -> int:
     except ValueError as exc:
         print(f"警告：{exc}；本轮忽略该原生报告并继续免费复核。", file=sys.stderr)
         native_qwen_report = ""
+    try:
+        report_session_date = _strict_report_session_date(market_report, args.market)
+    except ValueError as exc:
+        print(f"错误：{exc}；融合已停止。", file=sys.stderr)
+        return 2
     institutional_context = InstitutionalMarketContextCollector().collect(
-        args.market, _market_report_date(args.market)
+        args.market, report_session_date
     )
     sources = FusionSources(
         market_report=market_report,
