@@ -441,8 +441,22 @@ class MarketAnalyzer:
             }
 
         required_index_count = 6 if self.region == "cn" and overview.indices_attempted else 1
+        cn_index_dates = {
+            str(index.trade_date or "")
+            for index in valid_indices
+            if index.trade_date
+        }
+        cn_index_dates_aligned = bool(
+            self.region != "cn"
+            or not overview.indices_attempted
+            or (
+                len(cn_index_dates) == 1
+                and next(iter(cn_index_dates), "") == str(overview.date or "")
+            )
+        )
         indices_available = bool(
             len(valid_indices) >= required_index_count
+            and cn_index_dates_aligned
             and (
                 self.region != "cn"
                 or not overview.indices_attempted
@@ -518,6 +532,12 @@ class MarketAnalyzer:
         if overview.indices_attempted and not indices_available:
             missing_core_fields.append("major_indices")
         if (
+            self.region == "cn"
+            and overview.indices_attempted
+            and not cn_index_dates_aligned
+        ):
+            missing_core_fields.append("index_trade_date_alignment")
+        if (
             self.profile.has_market_stats
             and overview.market_stats_attempted
             and not breadth_available
@@ -567,6 +587,7 @@ class MarketAnalyzer:
             "core_data_ready": core_data_ready,
             "indices_available": indices_available,
             "valid_index_count": len(valid_indices),
+            "index_trade_date_aligned": cn_index_dates_aligned,
             "breadth_available": breadth_available,
             "turnover_available": turnover_available,
             "turnover_comparison_available": turnover_comparison_available,
@@ -2781,6 +2802,7 @@ Output the report content directly, no extra commentary.
             "aggregate_turnover": "两市成交额",
             "prior_session_turnover": "前一交易日可比成交额",
             "sw1_sector_rankings": "申万一级行业排名",
+            "index_trade_date_alignment": "六大指数同一交易日",
         }
         missing_text = "、".join(labels.get(field, field) for field in missing_fields)
         turnover_status = (

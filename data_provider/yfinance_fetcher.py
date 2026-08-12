@@ -596,8 +596,22 @@ class YfinanceFetcher(BaseFetcher):
         # symbols with bounded, isolated downloads.  The completed-session
         # cutoff and normalizer are intentionally identical to the batch path;
         # no stale or intraday row can be introduced by this fallback.
-        missing_symbols = [symbol for symbol in symbols if symbol not in metrics]
-        for symbol in missing_symbols:
+        proxy_dates = [
+            str(metrics[symbol].get("as_of") or "")
+            for symbol in self._US_MARKET_PROXIES
+            if symbol in metrics
+        ]
+        target_session = max(proxy_dates) if proxy_dates else completed_through
+        repair_symbols = [
+            symbol
+            for symbol in symbols
+            if symbol not in metrics
+            or (
+                target_session
+                and str(metrics[symbol].get("as_of") or "") != target_session
+            )
+        ]
+        for symbol in repair_symbols:
             try:
                 fallback_raw = yf.download(
                     symbol,
@@ -621,8 +635,13 @@ class YfinanceFetcher(BaseFetcher):
                 )
                 continue
             if metric:
-                metrics[symbol] = metric
-                logger.info("[Yfinance] 已单标的补齐缺失ETF symbol=%s", symbol)
+                if not target_session or metric.get("as_of") == target_session:
+                    metrics[symbol] = metric
+                    logger.info(
+                        "[Yfinance] 已单标的补齐缺失/落后ETF symbol=%s as_of=%s",
+                        symbol,
+                        metric.get("as_of"),
+                    )
         return metrics
 
     @classmethod

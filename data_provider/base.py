@@ -2545,7 +2545,7 @@ class DataFetcherManager:
             digits = re.sub(r"\D", "", code)
             return digits[-6:] if len(digits) >= 6 else code
 
-        def cn_row_rank(item: Dict[str, Any]) -> Tuple[int, int, int]:
+        def cn_row_rank(item: Dict[str, Any]) -> Tuple[str, int, int, int]:
             def positive(field: str) -> bool:
                 try:
                     return float(item.get(field) or 0) > 0
@@ -2553,6 +2553,7 @@ class DataFetcherManager:
                     return False
 
             return (
+                str(item.get("trade_date") or ""),
                 int(positive("previous_amount") and bool(item.get("previous_trade_date"))),
                 int("daily" in str(item.get("source") or "").lower()),
                 sum(
@@ -2573,8 +2574,35 @@ class DataFetcherManager:
             for item in incoming:
                 key = cn_index_key(item)
                 current = merged.get(key)
-                if current is None or cn_row_rank(item) > cn_row_rank(current):
+                if current is None:
                     merged[key] = dict(item)
+                    continue
+                current_date = str(current.get("trade_date") or "")
+                incoming_date = str(item.get("trade_date") or "")
+                if incoming_date and current_date and incoming_date < current_date:
+                    # A historical source may lag the latest close by one
+                    # session on GitHub runners.  Never let that older row
+                    # replace today's quote; for Shanghai/Shenzhen composite
+                    # rows its amount is exactly the prior-session turnover
+                    # evidence needed by the current close contract.
+                    if (
+                        key in {"000001", "399001"}
+                        and not current.get("previous_amount")
+                    ):
+                        current["previous_amount"] = item.get("amount") or 0.0
+                        current["previous_trade_date"] = incoming_date
+                    continue
+                if cn_row_rank(item) > cn_row_rank(current):
+                    replacement = dict(item)
+                    if (
+                        key in {"000001", "399001"}
+                        and current_date
+                        and incoming_date > current_date
+                        and not replacement.get("previous_amount")
+                    ):
+                        replacement["previous_amount"] = current.get("amount") or 0.0
+                        replacement["previous_trade_date"] = current_date
+                    merged[key] = replacement
                     continue
                 # Even when the current quote is more complete, preserve prior
                 # turnover evidence discovered by a later historical source.

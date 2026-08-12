@@ -202,6 +202,35 @@ def test_us_etf_batch_repairs_only_missing_symbol_with_isolated_download():
     assert yf.download.call_args_list[1].kwargs["threads"] is False
 
 
+def test_us_etf_batch_repairs_symbol_lagging_latest_proxy_session():
+    fetcher = YfinanceFetcher()
+    symbols = list(fetcher._US_MARKET_PROXIES) + list(fetcher._US_SECTOR_ETFS)
+    dates = pd.date_range("2026-06-01", periods=45, freq="B")
+
+    def frame(end: int = 45):
+        return pd.DataFrame(
+            {"Close": [100.0] * (end - 1) + [101.0], "Volume": [100.0] * end},
+            index=dates[:end],
+        )
+
+    batch = pd.concat(
+        {symbol: frame(44 if symbol == "XLC" else 45) for symbol in symbols},
+        axis=1,
+    )
+    yf = MagicMock()
+    yf.download.side_effect = [batch, frame()]
+
+    with patch(
+        "src.core.trading_calendar.get_effective_trading_date",
+        return_value=dates[-1].date(),
+    ):
+        metrics = fetcher._fetch_us_etf_metrics(yf)
+
+    assert metrics["XLC"]["as_of"] == dates[-1].date().isoformat()
+    assert yf.download.call_count == 2
+    assert yf.download.call_args_list[1].args == ("XLC",)
+
+
 def test_get_us_market_context_builds_complete_verified_contract():
     fetcher = YfinanceFetcher()
     metrics = {}

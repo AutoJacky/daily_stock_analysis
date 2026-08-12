@@ -169,6 +169,55 @@ class TestTickFlowMarketReviewFallback(unittest.TestCase):
         assert by_code["sh000688"]["source"] == "AkshareFetcher"
         assert by_code["sh000001"]["source"] == "BaostockFetcher"
 
+    def test_manager_keeps_latest_close_and_uses_lagged_exchange_amount_as_prior(self):
+        codes = [
+            ("sh000001", "上证指数"),
+            ("sz399001", "深证成指"),
+            ("sz399006", "创业板指"),
+            ("sh000688", "科创50"),
+            ("sh000016", "上证50"),
+            ("sh000300", "沪深300"),
+        ]
+
+        def row(code, name, date, current, amount):
+            return {
+                "code": code,
+                "name": name,
+                "current": current,
+                "prev_close": current - 1,
+                "open": current - 0.5,
+                "high": current + 1,
+                "low": current - 2,
+                "amount": amount,
+                "trade_date": date,
+            }
+
+        close_rows = [
+            row(code, name, "2026-08-12", 102.0, 12_000_000_000.0)
+            for code, name in codes
+        ]
+        lagged_daily_rows = [
+            row(code, name, "2026-08-11", 101.0, 10_000_000_000.0)
+            for code, name in codes
+            if code != "sh000688"
+        ]
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        manager._fetchers = [
+            _DummyFetcher("TencentFetcher", indices=close_rows),
+            _DummyFetcher("BaostockFetcher", indices=lagged_daily_rows),
+        ]
+        manager._get_tickflow_fetcher = lambda: None
+
+        data = DataFetcherManager.get_main_indices(manager, region="cn")
+
+        assert len(data) == 6
+        assert {item["trade_date"] for item in data} == {"2026-08-12"}
+        by_code = {item["code"]: item for item in data}
+        assert by_code["sh000001"]["current"] == 102.0
+        assert by_code["sh000001"]["previous_amount"] == 10_000_000_000.0
+        assert by_code["sh000001"]["previous_trade_date"] == "2026-08-11"
+        assert by_code["sz399001"]["previous_amount"] == 10_000_000_000.0
+
     def test_manager_falls_back_when_tickflow_market_stats_fails(self):
         manager = DataFetcherManager.__new__(DataFetcherManager)
         fallback = _DummyFetcher(

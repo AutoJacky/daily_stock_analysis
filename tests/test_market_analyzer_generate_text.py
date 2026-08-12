@@ -3880,6 +3880,58 @@ Sector text.
         assert "market_breadth_trade_date" in quality["missing_core_fields"]
         assert "sw1_sector_rankings" in quality["missing_core_fields"]
 
+    def test_cn_quality_rejects_six_indices_from_mixed_trade_dates(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        indices = [
+            MarketIndex(
+                code=code,
+                name=name,
+                current=price,
+                prev_close=price - 1,
+                open=price - 2,
+                high=price + 2,
+                low=price - 3,
+                amount=100_000_000_000.0,
+                previous_amount=90_000_000_000.0,
+                trade_date="2026-08-12" if code == "sh000688" else "2026-08-11",
+                previous_trade_date="2026-08-10",
+            )
+            for code, name, price in (
+                ("sh000001", "上证指数", 3900.0),
+                ("sz399001", "深证成指", 14000.0),
+                ("sz399006", "创业板指", 3500.0),
+                ("sh000688", "科创50", 1700.0),
+                ("sh000016", "上证50", 2900.0),
+                ("sh000300", "沪深300", 4600.0),
+            )
+        ]
+        overview = MarketOverview(
+            date="2026-08-12",
+            indices=indices,
+            indices_attempted=True,
+            market_stats_attempted=True,
+            market_stats_available=True,
+            market_stats_trade_date="2026-08-12",
+            up_count=3000,
+            down_count=2000,
+            total_amount=25000.0,
+            previous_total_amount=24000.0,
+            turnover_trade_date="2026-08-11",
+            top_sectors=[{
+                "name": "电子",
+                "change_pct": 1.0,
+                "classification": "SW1",
+            }],
+        )
+
+        quality = ma._assess_market_data_quality(overview)
+
+        assert quality["core_data_ready"] is False
+        assert quality["index_trade_date_aligned"] is False
+        assert "index_trade_date_alignment" in quality["missing_core_fields"]
+
     def test_no_private_attribute_access_in_market_analyzer_source(self):
         """Static guard: market_analyzer.py must not access private analyzer attrs."""
         import ast
