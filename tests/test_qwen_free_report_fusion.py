@@ -15,6 +15,7 @@ from src.services.qwen_free_report_fusion import (
     stock_prompt_excerpt,
 )
 from scripts.fuse_qwen_market_report import _market_section
+from scripts.fuse_qwen_market_report import _today_report
 
 
 MARKET_REPORT = """# A股大盘复盘
@@ -139,3 +140,9 @@ def test_market_section_accepts_legacy_generic_a_share_title_only_for_cn():
     assert _market_section(legacy, "cn") == legacy
     with pytest.raises(ValueError, match="美股"):
         _market_section(legacy, "us")
+
+
+def test_today_report_never_falls_back_to_stale_file(tmp_path, monkeypatch):
+    stale = tmp_path / "report_20260729.md"
+    stale.write_text("old", encoding="utf-8")
+    assert _today_report(tmp_path, "report") is None

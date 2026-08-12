@@ -29,3 +29,5 @@ python scripts/fuse_qwen_market_report.py --market us --send
 2. Repository Variable `QWEN_FREE_FUSION_ENABLED=true`。
 
 满足后，北京时间 A股收盘批次和美股收盘批次会关闭原始报告通知，仍保存完整报告，然后生成并发送一份融合终稿。缺少任一配置时保持原有推送方式，避免正式报告静默中断。
+
+手动验收可在 workflow dispatch 中选择 `fusion_market=cn|us`。当 `send_notification=false` 时只生成并上传当天的融合报告，不发送微信；融合器不会读取仓库里旧日期的报告作为本轮输入。

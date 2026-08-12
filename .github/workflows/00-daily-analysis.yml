@@ -35,6 +35,15 @@ on:
         required: false
         default: ''
         type: string
+      fusion_market:
+        description: '手动验收双 AI 融合市场（定时任务自动选择）'
+        required: false
+        default: 'none'
+        type: choice
+        options:
+          - none
+          - cn
+          - us
 
 # 并发控制：同一时间只运行一个分析任务
 concurrency:
@@ -498,6 +507,10 @@ jobs:
             export MARKET_REVIEW_REGION="us"
             export STOCK_MARKET_FILTER="us"
             FUSION_MARKET="us"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.fusion_market }}" != "none" ]; then
+            FUSION_MARKET="${{ github.event.inputs.fusion_market }}"
+            export MARKET_REVIEW_REGION="$FUSION_MARKET"
+            export STOCK_MARKET_FILTER="$FUSION_MARKET"
           fi
           echo "fusion_market=$FUSION_MARKET" >> "$GITHUB_OUTPUT"
           
@@ -607,9 +620,14 @@ jobs:
           PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
           NOTIFICATION_REPORT_CHANNELS: pushplus
         run: |
+          FUSION_SEND_ARG="--send"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.send_notification }}" = "false" ]; then
+            FUSION_SEND_ARG=""
+            echo "🔕 手动验收只生成融合报告，不发送微信"
+          fi
           python scripts/fuse_qwen_market_report.py \
             --market "${{ steps.stock_analysis.outputs.fusion_market }}" \
-            --send
+            $FUSION_SEND_ARG
 
       - name: 校验每日学习数据库
         id: learning_db

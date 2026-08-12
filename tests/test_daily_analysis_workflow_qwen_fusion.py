@@ -36,5 +36,14 @@ def test_fusion_step_uses_local_free_only_script_and_pushplus() -> None:
     assert "steps.qwen_fusion.outputs.enabled == 'true'" in fusion["if"]
     assert "scripts/fuse_qwen_market_report.py" in fusion["run"]
     assert "--send" in fusion["run"]
+    assert "github.event.inputs.send_notification" in fusion["run"]
     assert fusion["env"]["NOTIFICATION_REPORT_CHANNELS"] == "pushplus"
     assert "secrets.MODELSCOPE_ACCESS_TOKEN" in fusion["env"]["MODELSCOPE_ACCESS_TOKEN"]
+
+
+def test_manual_dispatch_can_choose_fusion_market_for_no_notify_validation() -> None:
+    workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    dispatch = workflow[True]["workflow_dispatch"]["inputs"]
+    assert dispatch["fusion_market"]["options"] == ["none", "cn", "us"]
+    analysis = next(step for step in _steps() if step.get("name") == "执行股票分析")
+    assert "github.event.inputs.fusion_market" in analysis["run"]

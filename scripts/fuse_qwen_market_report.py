@@ -38,9 +38,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _latest(directory: Path, pattern: str) -> Path | None:
-    candidates = sorted(directory.glob(pattern), key=lambda item: item.stat().st_mtime)
-    return candidates[-1] if candidates else None
+def _today_report(directory: Path, prefix: str) -> Path | None:
+    """Select only a report generated for today's workflow run."""
+
+    path = directory / f"{prefix}_{datetime.now().strftime('%Y%m%d')}.md"
+    return path if path.is_file() else None
 
 
 def _market_section(report: str, market: str) -> str:
@@ -67,11 +69,11 @@ def _market_section(report: str, market: str) -> str:
 
 def main() -> int:
     args = parse_args()
-    market_path = args.market_report or _latest(args.reports_dir, "market_review_*.md")
+    market_path = args.market_report or _today_report(args.reports_dir, "market_review")
     if market_path is None or not market_path.is_file():
         print("错误：未找到严格市场复盘文件；融合已停止。", file=sys.stderr)
         return 2
-    stock_path = args.stock_report or _latest(args.reports_dir, "report_*.md")
+    stock_path = args.stock_report or _today_report(args.reports_dir, "report")
     try:
         market_report = _market_section(
             market_path.read_text(encoding="utf-8"), args.market
