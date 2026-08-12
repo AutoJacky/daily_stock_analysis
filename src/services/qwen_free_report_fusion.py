@@ -33,7 +33,7 @@ _MAX_MARKET_PROMPT_CHARS = 22_000
 _MAX_STOCK_PROMPT_CHARS = 34_000
 _MAX_FINAL_MARKET_CHARS = 8_500
 _MAX_FINAL_STOCK_CHARS = 5_500
-_UNVERIFIED_NUMBER_NOTICE = "千问推导的新数值未采用，请以源数据复算"
+_UNVERIFIED_NUMBER_NOTICE = "（千问新增数值已省略，具体数值见下方权威底稿）"
 
 
 class QwenFreeFusionError(RuntimeError):
@@ -176,7 +176,9 @@ def build_review_messages(market: str, sources: FusionSources) -> List[Dict[str,
 2. 不得新增源报告中不存在的数字、价格、比例、日期、事件或消息来源。
 3. 数据有冲突时，以“严格数据版/程序校验”的事实为准，并在 disagreements 中说明。
 4. 不得承诺收益，不得把条件观察写成确定性买卖指令。
-5. 只返回 JSON，不要 Markdown 代码围栏，不要额外解释。
+5. 不得自行计算、换算或四舍五入新数字；需要数字时原样引用源报告已有数值。
+6. 源报告日期是本轮指定分析日期，不要因为模型知识截止时间而称其为未来日期或无法实时验证。
+7. 只返回 JSON，不要 Markdown 代码围栏，不要额外解释。
 
 JSON 结构：
 {{
@@ -306,7 +308,7 @@ def _scrub_unverified_numbers(value: Any, allowed: set[str]) -> Any:
     if isinstance(value, str):
         def replace(match: re.Match[str]) -> str:
             raw = match.group(0)
-            return raw if raw.lstrip("+") in allowed else f"[{_UNVERIFIED_NUMBER_NOTICE}]"
+            return raw if raw.lstrip("+") in allowed else _UNVERIFIED_NUMBER_NOTICE
 
         return _NUMBER_RE.sub(replace, value)
     if isinstance(value, list):
@@ -314,6 +316,26 @@ def _scrub_unverified_numbers(value: Any, allowed: set[str]) -> Any:
     if isinstance(value, dict):
         return {key: _scrub_unverified_numbers(item, allowed) for key, item in value.items()}
     return value
+
+
+def _remove_spurious_date_gaps(
+    review: Dict[str, Any], source_text: str
+) -> Dict[str, Any]:
+    """Drop model-cutoff objections to dates explicitly present in the source."""
+
+    source_dates = set(re.findall(r"\b\d{4}-\d{2}-\d{2}\b", source_text))
+    gaps = review.get("data_gaps")
+    if not isinstance(gaps, list) or not source_dates:
+        return review
+    review["data_gaps"] = [
+        gap
+        for gap in gaps
+        if not (
+            any(date in str(gap) for date in source_dates)
+            and ("未来" in str(gap) or "无法实时验证" in str(gap))
+        )
+    ]
+    return review
 
 
 def call_free_qwen_review(
@@ -372,7 +394,10 @@ def call_free_qwen_review(
     allowed_numbers = _source_numbers(
         f"{sources.market_report}\n{sources.stock_report}"
     )
-    return _scrub_unverified_numbers(review, allowed_numbers)
+    scrubbed = _scrub_unverified_numbers(review, allowed_numbers)
+    return _remove_spurious_date_gaps(
+        scrubbed, f"{sources.market_report}\n{sources.stock_report}"
+    )
 
 
 def _final_market_excerpt(report: str) -> str:

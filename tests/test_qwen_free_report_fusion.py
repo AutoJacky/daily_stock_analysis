@@ -74,7 +74,7 @@ def test_call_uses_only_fixed_modelscope_free_endpoint_and_scrubs_new_numbers():
         review = call_free_qwen_review("cn", sources, token="secret")
 
     assert review["summary"] == (
-        "上涨占比74.5%，未来[千问推导的新数值未采用，请以源数据复算]天保证上涨"
+        "上涨占比74.5%，未来（千问新增数值已省略，具体数值见下方权威底稿）天保证上涨"
     )
     assert review["risk_actions"] == ["仓位不超过60%"]
     assert post.call_args.args[0] == MODELSCOPE_API_URL
@@ -146,3 +146,26 @@ def test_today_report_never_falls_back_to_stale_file(tmp_path, monkeypatch):
     stale = tmp_path / "report_20260729.md"
     stale.write_text("old", encoding="utf-8")
     assert _today_report(tmp_path, "report") is None
+
+
+def test_source_report_date_is_not_kept_as_a_spurious_future_gap():
+    qwen_json = {
+        "summary": "按源报告执行。",
+        "consensus": [],
+        "disagreements": [],
+        "risk_actions": [],
+        "opportunity_watch": [],
+        "data_gaps": [
+            "未来日期 2026-08-10 无法实时验证",
+            "缺少带来源标识的市场新闻",
+        ],
+    }
+    response = _response(
+        {"choices": [{"message": {"content": __import__('json').dumps(qwen_json, ensure_ascii=False)}}]}
+    )
+    with patch("src.services.qwen_free_report_fusion.requests.post", return_value=response):
+        review = call_free_qwen_review(
+            "cn", FusionSources(MARKET_REPORT, STOCK_REPORT), token="secret"
+        )
+
+    assert review["data_gaps"] == ["缺少带来源标识的市场新闻"]
