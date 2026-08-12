@@ -588,6 +588,41 @@ class YfinanceFetcher(BaseFetcher):
             )
             if metric:
                 metrics[symbol] = metric
+
+        # Yahoo's multi-symbol endpoint occasionally omits exactly one ETF on
+        # GitHub-hosted runners even though that symbol remains available via
+        # an individual request.  A missing sector must not turn a complete US
+        # close into a false data-quality failure, so repair only the missing
+        # symbols with bounded, isolated downloads.  The completed-session
+        # cutoff and normalizer are intentionally identical to the batch path;
+        # no stale or intraday row can be introduced by this fallback.
+        missing_symbols = [symbol for symbol in symbols if symbol not in metrics]
+        for symbol in missing_symbols:
+            try:
+                fallback_raw = yf.download(
+                    symbol,
+                    period="3mo",
+                    interval="1d",
+                    auto_adjust=False,
+                    progress=False,
+                    threads=False,
+                )
+                metric = self._build_us_price_metric(
+                    self._extract_yf_symbol_frame(fallback_raw, symbol),
+                    symbol=symbol,
+                    name=names[symbol],
+                    completed_through=completed_through,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[Yfinance] 缺失ETF单标的补采失败 symbol=%s: %s",
+                    symbol,
+                    exc,
+                )
+                continue
+            if metric:
+                metrics[symbol] = metric
+                logger.info("[Yfinance] 已单标的补齐缺失ETF symbol=%s", symbol)
         return metrics
 
     @classmethod

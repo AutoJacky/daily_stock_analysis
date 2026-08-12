@@ -167,6 +167,41 @@ def test_build_us_price_metric_calculates_return_volume_ratio_and_date():
     assert metric["as_of"] == dates[-1].date().isoformat()
 
 
+def test_us_etf_batch_repairs_only_missing_symbol_with_isolated_download():
+    fetcher = YfinanceFetcher()
+    symbols = list(fetcher._US_MARKET_PROXIES) + list(fetcher._US_SECTOR_ETFS)
+    missing_symbol = "XLRE"
+    dates = pd.date_range("2026-06-01", periods=45, freq="B")
+
+    def frame(symbol: str):
+        return pd.DataFrame(
+            {
+                "Close": [100.0] * 44 + [101.0],
+                "Volume": [100.0] * 44 + [120.0],
+            },
+            index=dates,
+        )
+
+    batch = pd.concat(
+        {symbol: frame(symbol) for symbol in symbols if symbol != missing_symbol},
+        axis=1,
+    )
+    yf = MagicMock()
+    yf.download.side_effect = [batch, frame(missing_symbol)]
+
+    with patch(
+        "src.core.trading_calendar.get_effective_trading_date",
+        return_value=dates[-1].date(),
+    ):
+        metrics = fetcher._fetch_us_etf_metrics(yf)
+
+    assert set(metrics) == set(symbols)
+    assert metrics[missing_symbol]["as_of"] == dates[-1].date().isoformat()
+    assert yf.download.call_count == 2
+    assert yf.download.call_args_list[1].args == (missing_symbol,)
+    assert yf.download.call_args_list[1].kwargs["threads"] is False
+
+
 def test_get_us_market_context_builds_complete_verified_contract():
     fetcher = YfinanceFetcher()
     metrics = {}
