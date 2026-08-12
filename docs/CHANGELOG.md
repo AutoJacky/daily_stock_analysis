@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [修复] A 股大盘宽度在云端节点遭遇东方财富/efinance 断连时，改用受控并发完整抓取新浪 5,000+ 只 A 股快照，并以腾讯六大指数收盘日期校验交易日；分页不完整或日期无法证明时仍严格拒绝生成结论。
+- [修复] 美股行业 ETF 单标的下载虽返回行情却产生不可用分组表时，定向切换 Ticker.history 再解析；严格合约改为 11 只标普行业 ETF 必须全部同日，并记录具体缺失代码。
 
 - [新功能] A股与美股收盘任务支持双 AI 融合终稿：以程序校验的 Codex 流程报告为权威数字底稿，由魔搭免费千问独立复核一致项、分歧、风险和机会，只向 PushPlus 微信发送一份终稿并保留完整源报告审计附件。
 - [改进] 免费千问融合固定使用 ModelScope API Inference 与 `Qwen/Qwen3.5-397B-A17B`，免费额度、容量或接口异常时立即停止，禁止回退百炼、DashScope、Coding Plan、OpenRouter 或其他收费服务；千问新增但源报告不存在的数字不会进入终稿。

@@ -612,6 +612,7 @@ class YfinanceFetcher(BaseFetcher):
             )
         ]
         for symbol in repair_symbols:
+            metric = None
             try:
                 fallback_raw = yf.download(
                     symbol,
@@ -633,7 +634,38 @@ class YfinanceFetcher(BaseFetcher):
                     symbol,
                     exc,
                 )
-                continue
+            # A successful single-symbol history request can still yield an
+            # unusable grouped frame from yf.download.  Ticker.history is a
+            # second parser path, limited to symbols the batch did not verify.
+            if not metric or (
+                target_session and metric.get("as_of") != target_session
+            ):
+                try:
+                    ticker_raw = yf.Ticker(symbol).history(
+                        period="3mo",
+                        interval="1d",
+                        auto_adjust=False,
+                        actions=False,
+                    )
+                    ticker_metric = self._build_us_price_metric(
+                        ticker_raw,
+                        symbol=symbol,
+                        name=names[symbol],
+                        completed_through=completed_through,
+                    )
+                    if ticker_metric:
+                        metric = ticker_metric
+                        logger.info(
+                            "[Yfinance] Ticker.history修复ETF symbol=%s as_of=%s",
+                            symbol,
+                            metric.get("as_of"),
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "[Yfinance] Ticker.history补采失败 symbol=%s: %s",
+                        symbol,
+                        exc,
+                    )
             if metric:
                 if not target_session or metric.get("as_of") == target_session:
                     metrics[symbol] = metric
@@ -642,6 +674,19 @@ class YfinanceFetcher(BaseFetcher):
                         symbol,
                         metric.get("as_of"),
                     )
+                else:
+                    logger.warning(
+                        "[Yfinance] ETF补采日期未对齐 symbol=%s expected=%s actual=%s",
+                        symbol,
+                        target_session,
+                        metric.get("as_of"),
+                    )
+            else:
+                logger.warning(
+                    "[Yfinance] ETF补采仍无可用日线 symbol=%s expected=%s",
+                    symbol,
+                    target_session,
+                )
         return metrics
 
     @classmethod
@@ -904,7 +949,7 @@ class YfinanceFetcher(BaseFetcher):
         }
 
         proxy_ok = len(aligned_proxies) == len(self._US_MARKET_PROXIES)
-        sector_ok = len(aligned_sector_metrics) >= 8
+        sector_ok = len(aligned_sector_metrics) == len(self._US_SECTOR_ETFS)
         macro_ok = "DGS2" in macro and "DGS10" in macro
         liquidity_ok = bool(
             spy
@@ -919,6 +964,13 @@ class YfinanceFetcher(BaseFetcher):
             missing.append("liquidity_proxy")
         if not sector_ok:
             missing.append("sector_etf_coverage")
+
+        missing_sector_symbols = [
+            symbol
+            for symbol in self._US_SECTOR_ETFS
+            if symbol not in metrics
+            or str(metrics[symbol].get("as_of") or "") != latest_proxy_date
+        ]
         if not macro_ok:
             missing.append("treasury_yields")
 
@@ -964,6 +1016,7 @@ class YfinanceFetcher(BaseFetcher):
                 "proxy_ready": proxy_ok,
                 "liquidity_ready": liquidity_ok,
                 "sector_ready": sector_ok,
+                "missing_sector_symbols": missing_sector_symbols,
                 "macro_ready": macro_ok,
                 "missing_core_fields": missing,
             },

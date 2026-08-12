@@ -231,6 +231,71 @@ def test_us_etf_batch_repairs_symbol_lagging_latest_proxy_session():
     assert yf.download.call_args_list[1].args == ("XLC",)
 
 
+def test_us_etf_repair_uses_ticker_history_when_single_download_is_unusable():
+    fetcher = YfinanceFetcher()
+    symbols = list(fetcher._US_MARKET_PROXIES) + list(fetcher._US_SECTOR_ETFS)
+    missing_symbol = "XLC"
+    dates = pd.date_range("2026-06-01", periods=45, freq="B")
+
+    def frame():
+        return pd.DataFrame(
+            {"Close": [100.0] * 44 + [101.0], "Volume": [100.0] * 45},
+            index=dates,
+        )
+
+    batch = pd.concat(
+        {symbol: frame() for symbol in symbols if symbol != missing_symbol},
+        axis=1,
+    )
+    ticker = MagicMock()
+    ticker.history.return_value = frame()
+    yf = MagicMock()
+    yf.download.side_effect = [batch, pd.DataFrame()]
+    yf.Ticker.return_value = ticker
+
+    with patch(
+        "src.core.trading_calendar.get_effective_trading_date",
+        return_value=dates[-1].date(),
+    ):
+        metrics = fetcher._fetch_us_etf_metrics(yf)
+
+    assert set(metrics) == set(symbols)
+    assert metrics[missing_symbol]["as_of"] == dates[-1].date().isoformat()
+    yf.Ticker.assert_called_once_with(missing_symbol)
+    ticker.history.assert_called_once_with(
+        period="3mo",
+        interval="1d",
+        auto_adjust=False,
+        actions=False,
+    )
+
+
+def test_us_context_requires_all_eleven_sector_etfs_and_names_missing_symbols():
+    fetcher = YfinanceFetcher()
+    metrics = {
+        symbol: _price_metric(symbol, name, 1.0)
+        for symbol, name in {
+            **fetcher._US_MARKET_PROXIES,
+            **fetcher._US_SECTOR_ETFS,
+        }.items()
+        if symbol != "XLRE"
+    }
+
+    with patch.object(fetcher, "_fetch_us_etf_metrics", return_value=metrics), patch.object(
+        fetcher,
+        "_fetch_fred_metric",
+        side_effect=lambda series_id, _as_of="": _fred_metric(series_id),
+    ):
+        context = fetcher.get_us_market_context()
+
+    assert context is not None
+    assert context["sector_rankings"]["coverage"] == 10
+    assert context["quality"]["core_ready"] is False
+    assert context["quality"]["sector_ready"] is False
+    assert context["quality"]["missing_sector_symbols"] == ["XLRE"]
+    assert "sector_etf_coverage" in context["quality"]["missing_core_fields"]
+
+
 def test_get_us_market_context_builds_complete_verified_contract():
     fetcher = YfinanceFetcher()
     metrics = {}
