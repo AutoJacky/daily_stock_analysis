@@ -2013,8 +2013,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 if self.region == "us"
                 else f"#### {cn_sector_label}领跌 Top 5"
             )
-            append_ranking(leading_title, cn_sector_label, overview.top_sectors)
-            append_ranking(lagging_title, cn_sector_label, overview.bottom_sectors)
+            sector_name_label = "标普行业ETF" if self.region == "us" else cn_sector_label
+            append_ranking(leading_title, sector_name_label, overview.top_sectors)
+            append_ranking(lagging_title, sector_name_label, overview.bottom_sectors)
             if uses_sw1_proxy:
                 proxy_row = next(
                     item

@@ -3131,6 +3131,24 @@ Sector text.
         assert "#### 申万一级行业领跌 Top 5" in result
         assert "| 1 | 煤炭 | -1.12% |" in result
 
+    def test_us_chinese_sector_block_labels_sp_sector_etfs(self):
+        from src.market_analyzer import MarketAnalyzer, MarketOverview
+
+        ma = MarketAnalyzer.__new__(MarketAnalyzer)
+        ma.config = SimpleNamespace(report_language="zh")
+        ma.region = "us"
+        overview = MarketOverview(
+            date="2026-08-14",
+            top_sectors=[{"name": "XLK", "change_pct": 1.25}],
+            bottom_sectors=[{"name": "XLU", "change_pct": -0.75}],
+        )
+
+        result = ma._build_sector_block(overview)
+
+        assert "#### 标普行业ETF领涨 Top 5" in result
+        assert "| 排名 | 标普行业ETF | 涨跌幅 |" in result
+        assert "| 排名 | 申万一级行业 | 涨跌幅 |" not in result
+
     def test_market_review_payload_sections_skip_top_report_title(self):
         from src.market_analyzer import MarketAnalyzer
 
