@@ -29,6 +29,12 @@ from src.services.qwen_free_report_fusion import (  # noqa: E402
 from src.services.institutional_market_context import (  # noqa: E402
     InstitutionalMarketContextCollector,
 )
+from src.services.personal_portfolio_advisory import (  # noqa: E402
+    PersonalPortfolioError,
+    build_personal_portfolio_advisory,
+    load_private_portfolio_config,
+    render_private_portfolio_advisory,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -184,6 +190,32 @@ def main() -> int:
         }
 
     content = render_fused_report(args.market, sources, review)
+    private_portfolio_section = ""
+    try:
+        portfolio_config = load_private_portfolio_config()
+        if portfolio_config is not None:
+            portfolio_advisory = build_personal_portfolio_advisory(
+                portfolio_config,
+                as_of=report_session_date,
+            )
+            private_portfolio_section = render_private_portfolio_advisory(
+                portfolio_advisory,
+                args.market,
+            )
+            coverage = portfolio_advisory.get("fund_coverage") or {}
+            print(
+                "个人组合量化已生成："
+                f"基金净值覆盖 {coverage.get('valid', 0)}/{coverage.get('configured', 0)}；"
+                "明细不写入公开报告。"
+            )
+    except PersonalPortfolioError as exc:
+        print(f"警告：个人组合配置未通过校验（{exc}）；公开市场报告继续生成。", file=sys.stderr)
+    except Exception as exc:
+        print(
+            f"警告：个人组合公开净值刷新失败（{type(exc).__name__}）；"
+            "本轮不生成个性化交易金额，公开市场报告继续生成。",
+            file=sys.stderr,
+        )
     output = args.output or (
         args.reports_dir
         / f"fused_review_{args.market}_{datetime.now().strftime('%Y%m%d')}.md"
@@ -196,7 +228,7 @@ def main() -> int:
         market_name = "A股" if args.market == "cn" else "美股"
         sender = PushplusSender(get_config())
         sent = sender.send_to_pushplus(
-            content,
+            content + (f"\n\n---\n\n{private_portfolio_section}" if private_portfolio_section else ""),
             title=f"🏛️ {market_name}多源机构框架复盘 · {datetime.now():%m-%d}",
             timeout_seconds=20,
         )

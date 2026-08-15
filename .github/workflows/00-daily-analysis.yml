@@ -618,6 +618,8 @@ jobs:
           MODELSCOPE_ACCESS_TOKEN: ${{ secrets.MODELSCOPE_ACCESS_TOKEN }}
           QWEN_NATIVE_REPORT_CN_B64: ${{ secrets.QWEN_NATIVE_REPORT_CN_B64 }}
           QWEN_NATIVE_REPORT_US_B64: ${{ secrets.QWEN_NATIVE_REPORT_US_B64 }}
+          # 真实持仓只在最终微信发送前由确定性程序使用；不进入千问请求或公开 artifact。
+          PERSONAL_PORTFOLIO_B64: ${{ secrets.PERSONAL_PORTFOLIO_B64 }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
           NOTIFICATION_REPORT_CHANNELS: pushplus
