@@ -3932,6 +3932,61 @@ Sector text.
         assert quality["index_trade_date_aligned"] is False
         assert "index_trade_date_alignment" in quality["missing_core_fields"]
 
+    def test_cn_quality_accepts_only_complete_same_session_sw1_proxy(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        indices = [
+            MarketIndex(
+                code=code,
+                name=name,
+                current=price,
+                prev_close=price - 1,
+                open=price - 2,
+                high=price + 2,
+                low=price - 3,
+                amount=100_000_000_000.0,
+                trade_date="2026-08-14",
+                previous_trade_date="2026-08-13",
+            )
+            for code, name, price in (
+                ("sh000001", "上证指数", 3900.0),
+                ("sz399001", "深证成指", 14000.0),
+                ("sz399006", "创业板指", 3500.0),
+                ("sh000688", "科创50", 1700.0),
+                ("sh000016", "上证50", 2900.0),
+                ("sh000300", "沪深300", 4600.0),
+            )
+        ]
+        proxy_row = {
+            "name": "电子",
+            "change_pct": 1.0,
+            "classification": "SW1_PROXY",
+            "quote_date": "2026-08-14",
+            "industry_count": 31,
+            "minimum_universe_coverage": 0.95,
+            "method": "prior_free_float_market_cap_weighted_constituent_return",
+        }
+        overview = MarketOverview(
+            date="2026-08-14",
+            indices=indices,
+            indices_attempted=True,
+            up_count=3000,
+            down_count=2000,
+            total_amount=25000.0,
+            previous_total_amount=24000.0,
+            turnover_trade_date="2026-08-13",
+            top_sectors=[proxy_row],
+            bottom_sectors=[dict(proxy_row, name="煤炭", change_pct=-1.0)],
+        )
+
+        assert ma._assess_market_data_quality(overview)["sector_rankings_available"] is True
+
+        overview.bottom_sectors[0]["quote_date"] = "2026-08-13"
+        quality = ma._assess_market_data_quality(overview)
+        assert quality["sector_rankings_available"] is False
+        assert "sw1_sector_rankings" in quality["missing_core_fields"]
+
     def test_no_private_attribute_access_in_market_analyzer_source(self):
         """Static guard: market_analyzer.py must not access private analyzer attrs."""
         import ast

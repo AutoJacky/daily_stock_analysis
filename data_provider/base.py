@@ -3992,12 +3992,32 @@ class DataFetcherManager:
         return [], []
 
     def get_sw1_sector_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
-        """Return only verified Shenwan level-1 industry rankings.
+        """Return verified Shenwan level-1 rankings or a strict labelled proxy.
 
         General board APIs mix Eastmoney, THS and national-economy taxonomies.
         A close-review report must not silently present those as a mainstream
-        sell-side industry classification.
+        sell-side industry classification.  A proxy is accepted only when it
+        proves a complete 31-industry SW2021 universe, one aligned quote date,
+        adequate constituent coverage and the exact documented weighting
+        method.
         """
+
+        def is_verified_sw1_item(item: Any) -> bool:
+            if not isinstance(item, dict):
+                return False
+            classification = str(item.get("classification") or "").upper()
+            if classification == "SW1":
+                return True
+            if classification != "SW1_PROXY":
+                return False
+            quote_date = str(item.get("quote_date") or "")
+            return bool(
+                re.fullmatch(r"\d{4}-\d{2}-\d{2}", quote_date)
+                and int(item.get("industry_count") or 0) == 31
+                and float(item.get("minimum_universe_coverage") or 0.0) >= 0.80
+                and str(item.get("method") or "")
+                == "prior_free_float_market_cap_weighted_constituent_return"
+            )
 
         preferred = sorted(
             self._get_fetchers_snapshot(),
@@ -4020,11 +4040,7 @@ class DataFetcherManager:
             if not data or not data[0] or not data[1]:
                 continue
             combined = list(data[0]) + list(data[1])
-            if combined and all(
-                str(item.get("classification") or "").upper() == "SW1"
-                for item in combined
-                if isinstance(item, dict)
-            ):
+            if combined and all(is_verified_sw1_item(item) for item in combined):
                 logger.info("[%s] 申万一级行业排名通过分类校验", fetcher.name)
                 return list(data[0]), list(data[1])
             logger.info("[%s] 行业分类非申万一级，已忽略", fetcher.name)

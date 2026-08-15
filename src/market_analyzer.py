@@ -507,6 +507,22 @@ class MarketAnalyzer:
             )
         )
         sector_rows = list(overview.top_sectors or []) + list(overview.bottom_sectors or [])
+
+        def is_accepted_cn_sector_row(item: Any) -> bool:
+            if not isinstance(item, dict):
+                return False
+            classification = str(item.get("classification") or "").upper()
+            if classification == "SW1":
+                return True
+            return bool(
+                classification == "SW1_PROXY"
+                and item.get("quote_date") == overview.date
+                and int(item.get("industry_count") or 0) == 31
+                and float(item.get("minimum_universe_coverage") or 0.0) >= 0.80
+                and str(item.get("method") or "")
+                == "prior_free_float_market_cap_weighted_constituent_return"
+            )
+
         sector_rankings_available = bool(
             not self.profile.has_sector_rankings
             or (
@@ -514,11 +530,7 @@ class MarketAnalyzer:
                 and (
                     self.region != "cn"
                     or not overview.indices_attempted
-                    or all(
-                        isinstance(item, dict)
-                        and str(item.get("classification") or "").upper() == "SW1"
-                        for item in sector_rows
-                    )
+                    or all(is_accepted_cn_sector_row(item) for item in sector_rows)
                 )
             )
         )
@@ -1981,18 +1993,41 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             append_ranking("#### Leading Concept Themes", "Concept", overview.top_concepts)
             append_ranking("#### Lagging Concept Themes", "Concept", overview.bottom_concepts)
         else:
+            uses_sw1_proxy = self.region == "cn" and any(
+                str(item.get("classification") or "").upper() == "SW1_PROXY"
+                for item in list(overview.top_sectors or []) + list(overview.bottom_sectors or [])
+                if isinstance(item, dict)
+            )
+            cn_sector_label = (
+                "申万一级行业（成分股流通市值加权代理）"
+                if uses_sw1_proxy
+                else "申万一级行业"
+            )
             leading_title = (
                 "#### 标普行业ETF领涨 Top 5"
                 if self.region == "us"
-                else "#### 申万一级行业领涨 Top 5"
+                else f"#### {cn_sector_label}领涨 Top 5"
             )
             lagging_title = (
                 "#### 标普行业ETF领跌 Top 5"
                 if self.region == "us"
-                else "#### 申万一级行业领跌 Top 5"
+                else f"#### {cn_sector_label}领跌 Top 5"
             )
-            append_ranking(leading_title, "申万一级行业", overview.top_sectors)
-            append_ranking(lagging_title, "申万一级行业", overview.bottom_sectors)
+            append_ranking(leading_title, cn_sector_label, overview.top_sectors)
+            append_ranking(lagging_title, cn_sector_label, overview.bottom_sectors)
+            if uses_sw1_proxy:
+                proxy_row = next(
+                    item
+                    for item in list(overview.top_sectors or []) + list(overview.bottom_sectors or [])
+                    if isinstance(item, dict)
+                    and str(item.get("classification") or "").upper() == "SW1_PROXY"
+                )
+                lines.extend([
+                    "",
+                    "- **口径说明**：申万官方指数接口本轮不可用；以上为新浪公开的完整31个"
+                    "申万2021一级行业成分股，按前一交易日流通市值加权的当日收益代理排名，"
+                    f"数据日 {proxy_row.get('quote_date', '-')}。代理值不冒充申万官方指数涨跌幅。",
+                ])
             append_ranking("#### 概念板块领涨 Top 5", "概念板块", overview.top_concepts)
             append_ranking("#### 概念板块领跌 Top 5", "概念板块", overview.bottom_concepts)
         return "\n".join(lines)

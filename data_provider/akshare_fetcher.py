@@ -51,6 +51,7 @@ from .realtime_types import (
     safe_float, safe_int  # 使用统一的类型转换函数
 )
 from .us_index_mapping import is_us_index_code, is_us_stock_code
+from .sw1_sina_proxy import SinaSw1ProxyFetcher
 
 
 # 保留旧的 RealtimeQuote 别名，用于向后兼容
@@ -62,6 +63,7 @@ logger = logging.getLogger(__name__)
 SINA_REALTIME_ENDPOINT = "hq.sinajs.cn/list"
 TENCENT_REALTIME_ENDPOINT = "qt.gtimg.cn/q"
 _AKSHARE_HISTORY_CALL_TIMEOUT = 30.0
+_AKSHARE_SW1_CALL_TIMEOUT = 15.0
 _AKSHARE_TIMEOUT_PROCESS_JOIN_GRACE = 1.0
 _AKSHARE_TIMEOUT_PROCESS_START_METHOD = "spawn"
 
@@ -2067,7 +2069,12 @@ class AkshareFetcher(BaseFetcher):
         try:
             self._set_random_user_agent()
             self._enforce_rate_limit()
-            sw_df = ak.index_realtime_sw(symbol="一级行业")
+            sw_df = _akshare_call_with_timeout(
+                ak.index_realtime_sw,
+                symbol="一级行业",
+                timeout=_AKSHARE_SW1_CALL_TIMEOUT,
+                call_name="index_realtime_sw",
+            )
             required = {"指数名称", "昨收盘", "最新价"}
             if sw_df is not None and not sw_df.empty and required.issubset(sw_df.columns):
                 sw_df = sw_df.copy()
@@ -2097,6 +2104,16 @@ class AkshareFetcher(BaseFetcher):
                 )
         except Exception as exc:
             logger.warning("[Akshare] 申万一级行业行情失败: %s", exc)
+
+        # 官方申万指数端点偶发在海外云节点返回 HTML、断连或长期不响应。
+        # 此时使用新浪公开的 SW2021 三级节点树中的完整 31 个一级行业，
+        # 以同一交易日成分股的前一日流通市值加权收益构造透明代理。
+        # 代理结果携带 SW1_PROXY、日期、31/31 覆盖和方法字段；下游不会
+        # 将其冒充官方指数值，也不会接受缺行业或跨交易日的结果。
+        try:
+            return SinaSw1ProxyFetcher().get_rankings(n=n)
+        except Exception as exc:
+            logger.warning("[Akshare] 新浪申万一级成分股加权代理失败: %s", exc)
         
         # 优先东财接口
         try:
