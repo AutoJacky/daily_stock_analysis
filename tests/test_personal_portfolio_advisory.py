@@ -140,3 +140,13 @@ def test_refuses_to_backcast_holdings_before_snapshot():
         build_personal_portfolio_advisory(
             _config(), as_of=date(2026, 8, 13), fetcher=_fetcher, max_workers=1
         )
+
+
+def test_allows_weekend_snapshot_for_previous_friday_report():
+    config = _config()
+    config["snapshot_date"] = "2026-08-15"
+    advisory = build_personal_portfolio_advisory(
+        config, as_of=date(2026, 8, 14), fetcher=_fetcher, max_workers=2
+    )
+    assert advisory["snapshot_date"] == "2026-08-15"
+    assert advisory["as_of"] == "2026-08-14"

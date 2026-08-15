@@ -419,7 +419,11 @@ def build_personal_portfolio_advisory(
     """Refresh public NAVs and build a deterministic account-level decision."""
 
     snapshot_date = date.fromisoformat(str(config["snapshot_date"]))
-    if as_of < snapshot_date:
+    business_days_after_report = pd.bdate_range(
+        start=as_of + pd.Timedelta(days=1),
+        end=snapshot_date,
+    )
+    if as_of < snapshot_date and len(business_days_after_report) > 0:
         raise PersonalPortfolioError("报告交易日早于持仓快照日，禁止倒推个人仓位")
     assets = list(config["assets"])
     fund_assets = [item for item in assets if item.get("asset_type") == "fund"]
